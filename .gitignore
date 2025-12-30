@@ -1,0 +1,25 @@
+# SCons
+.sconsign.dblite
+SConscript
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Build artifacts
+build/
+*.world
+*.js
+
+# IDEs
+.vscode/
+.idea/
+
+# Geo data artifacts (if any outside build)
+*.tif
+*.geojson
+*.png
+!src/**/*.png
