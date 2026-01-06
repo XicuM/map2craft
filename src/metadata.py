@@ -36,16 +36,16 @@ class MetadataGenerator:
             height, width = elevation.shape
             
             # Extract config values
-            meta_cfg = self.config.get('metadata', {})
-            mc_cfg = self.config.get('minecraft', {})
+            meta_cfg = self.config['metadata']
+            mc_cfg = self.config['minecraft']
             
-            lon_km_factor = meta_cfg.get('longitude_km_factor', 85)
-            lat_km_factor = meta_cfg.get('latitude_km_factor', 111)
-            min_y = mc_cfg.get('build_limit', {}).get('min', -64)
-            max_y = mc_cfg.get('build_limit', {}).get('max', 320)
-            sea_level_y = meta_cfg.get('minecraft_sea_level_y', 62)
-            water_level_y = meta_cfg.get('worldpainter_default_water_level_y', 62)
-            scale_percent = meta_cfg.get('worldpainter_scale_percent', 100)
+            lon_km_factor = meta_cfg['longitude_km_factor']
+            lat_km_factor = meta_cfg['latitude_km_factor']
+            min_y = mc_cfg['build_limit']['min']
+            max_y = mc_cfg['build_limit']['max']
+            sea_level_y = meta_cfg['minecraft_sea_level_y']
+            water_level_y = meta_cfg['worldpainter_default_water_level_y']
+            scale_percent = meta_cfg['worldpainter_scale_percent']
             
             lon_min = bounds['lon_min']
             lat_min = bounds['lat_min']
@@ -113,7 +113,7 @@ class MetadataGenerator:
                 "worldpainter": {
                     "suggested_settings": {
                         "default_water_level": water_level_y,
-                        "map_format": f"org.pepsoft.anvil.{mc_cfg.get('version', '1.20.5')}",
+                        "map_format": f"org.pepsoft.anvil.{mc_cfg['version']}",
                         "lower_build_limit": min_y,
                         "upper_build_limit": max_y,
                         "scale_percent": scale_percent
@@ -155,7 +155,7 @@ class MetadataGenerator:
             'lon_max': self.config['geospatial']['bounds'][2],
             'lat_max': self.config['geospatial']['bounds'][3]
         }
-        scale_down = self.config['minecraft'].get('scale', {}).get('horizontal', 20)
+        scale_down = self.config['minecraft']['scale']['horizontal']
         
         self.generate_metadata(str(source[0]), str(target[0]), bounds, scale_down)
         return None

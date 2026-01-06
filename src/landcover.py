@@ -11,7 +11,7 @@ import requests
 from rasterio.merge import merge
 from rasterio.windows import from_bounds as window_from_bounds
 from typing import Optional, Tuple, List
-import datetime # Added for current_year
+import datetime
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class LandCoverProcessor:
         current_year = datetime.datetime.now().year
         
         lon_min, lat_min, lon_max, lat_max = bounds
-        print(f"Downloading latest land cover from Microsoft Planetary Computer...")
+        log.info(f"Downloading latest land cover from Microsoft Planetary Computer...")
         
         try:
             import pystac_client
@@ -76,31 +76,31 @@ class LandCoverProcessor:
                     break
             
             if not items:
-                print(f"  [x] No WorldCover data found in range 2020-{current_year}")
+                log.warning(f"  [x] No WorldCover data found in range 2020-{current_year}")
                 return False
 
-            print(f"  [v] Found {len(items)} tiles for year {final_year}")
+            log.info(f"  [v] Found {len(items)} tiles for year {final_year}")
             
             sources = []
             for item in items:
                 asset = item.assets.get("map")
                 if asset:
                     href = asset.href
-                    print(f"    - Opening: {item.id}")
+                    log.info(f"    - Opening: {item.id}")
                     src = rasterio.open(href)
                     sources.append(src)
                     
             if not sources:
-                print("  [x] No valid map assets found")
+                log.error("  [x] No valid map assets found")
                 return False
 
-            print(f"  Merging {len(sources)} tile(s)...")
+            log.info(f"  Merging {len(sources)} tile(s)...")
             mosaic, mosaic_transform = merge(sources, bounds=(lon_min, lat_min, lon_max, lat_max))
             
             for src in sources:
                 src.close()
 
-            print(f"  Saving cropped land cover...")
+            log.info(f"  Saving cropped land cover...")
             os.makedirs(os.path.dirname(output_file), exist_ok=True)
             
             with rasterio.open(
@@ -118,14 +118,12 @@ class LandCoverProcessor:
             ) as dst:
                 dst.write(mosaic[0], 1)
                 
-            print(f"  [v] Land cover saved: {output_file}")
+            log.info(f"  [v] Land cover saved: {output_file}")
             self.print_land_cover_stats(output_file)
             return True
             
         except Exception as e:
-            print(f"  [x] Error downloading from Planetary Computer: {e}")
-            import traceback
-            traceback.print_exc()
+            log.error(f"  [x] Error downloading from Planetary Computer: {e}", exc_info=True)
             return False
 
 
@@ -137,8 +135,8 @@ class LandCoverProcessor:
         with rasterio.open(land_cover_file) as src:
             data = src.read(1)
             
-        print(f"\nLand cover distribution:")
-        print(f"  Size: {data.shape[1]} x {data.shape[0]} pixels")
+        log.info(f"\nLand cover distribution:")
+        log.info(f"  Size: {data.shape[1]} x {data.shape[0]} pixels")
         
         unique, counts = np.unique(data, return_counts=True)
         total = data.size
@@ -146,7 +144,7 @@ class LandCoverProcessor:
         for value, count in zip(unique, counts):
             name = LAND_COVER_NAMES.get(int(value), f"Unknown ({int(value)})")
             percentage = (count / total) * 100
-            print(f"  {name}: {percentage:.1f}%")
+            log.info(f"  {name}: {percentage:.1f}%")
 
     def download_land_cover_action(self, target, source, env):
         ''' SCons action to download land cover.
@@ -160,6 +158,6 @@ class LandCoverProcessor:
         
         success = self.download_land_cover(bounds_tuple, str(target[0]))
         if not success:
-            print("Warning: Land cover download failed, biomes will use elevation-only classification")
+            log.warning("Land cover download failed, biomes will use elevation-only classification")
         return None
 

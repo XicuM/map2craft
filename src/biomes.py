@@ -76,32 +76,24 @@ class BiomeMapper:
             :return: Biome ID array
         '''
         is_water = elevation <= sea_level
-        is_coastal = (elevation > sea_level) & (elevation < sea_level + 10)
         
-        # Water & Coastal Conditions
+        # Water Conditions (Depth-based)
         conds = [
             is_water & (elevation < deep_depth),
             is_water & (elevation > lukewarm_depth),
-            is_water,
-            is_coastal & (slope >= cliff_threshold),
-            is_coastal
+            is_water
         ]
-        choices = [BIOME_IDS['deep_ocean'], BIOME_IDS['lukewarm_ocean'], BIOME_IDS['ocean'], 
-                BIOME_IDS['stone_shore'], BIOME_IDS['beach']]
+        choices = [BIOME_IDS['deep_ocean'], BIOME_IDS['lukewarm_ocean'], BIOME_IDS['ocean']]
 
-        # Land Conditions
+        # Land Conditions (Land-cover based)
         if land_cover is not None:
             conds += [
                 land_cover == 90, # Wetland
                 land_cover == 10, # Trees
-                (land_cover == 60) & (elevation > 50), # High Bare
-                ((land_cover == 20) | (land_cover == 30)) & (elevation >= 100) # High Grass
+                land_cover == 60, # Bare/sparse vegetation
+                (land_cover == 20) | (land_cover == 30) # Shrubland/Grassland
             ]
             choices += [BIOME_IDS['swamp'], BIOME_IDS['forest'], BIOME_IDS['badlands'], BIOME_IDS['savanna']]
-        else:
-            # Fallback to elevation-only logic
-            conds += [elevation >= 200, elevation >= 100]
-            choices += [np.where(slope >= 30, BIOME_IDS['badlands'], BIOME_IDS['savanna']), BIOME_IDS['forest']]
 
         return np.select(conds, choices, default=BIOME_IDS['plains']).astype(np.uint8)
 
@@ -122,11 +114,11 @@ class BiomeMapper:
             lc = self.load_and_resample_land_cover(land_cover_file, elev.shape, trans, crs) if land_cover_file else None
             
             # Get biome configuration
-            biome_cfg = self.config.get('biomes', {})
-            sea_level = biome_cfg.get('sea_level_meters', 0.0)
-            cliff_threshold = biome_cfg.get('cliff_threshold', 25.0)
-            lukewarm_depth = biome_cfg.get('lukewarm_ocean_depth_m', -35.0)
-            deep_depth = biome_cfg.get('deep_ocean_depth_m', -90.0)
+            biome_cfg = self.config['biomes']
+            sea_level = biome_cfg['sea_level_meters']
+            cliff_threshold = biome_cfg['cliff_threshold']
+            lukewarm_depth = biome_cfg['lukewarm_ocean_depth_m']
+            deep_depth = biome_cfg['deep_ocean_depth_m']
             
             # Generate biome map
             biome_map = self.generate_biome_map_array(elev, slope, lc, sea_level, cliff_threshold, lukewarm_depth, deep_depth)

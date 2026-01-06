@@ -1,83 +1,4 @@
-"""
-Visualization tools for map2craft.
-Generate preview images for terrain, biomes, and land cover.
-"""
 
-import os
-import logging
-import numpy as np
-import rasterio
-from PIL import Image, ImageDraw, ImageFont
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
-from typing import Dict, Tuple, Optional, Sequence
-import json
-
-log = logging.getLogger(__name__)
-
-# Minecraft biome colors (approximate)
-BIOME_COLORS = {
-    0: (0, 0, 112),      # Ocean - dark blue
-    1: (141, 179, 96),   # Plains - light green
-    4: (5, 102, 33),     # Forest - dark green
-    5: (11, 102, 89),    # Taiga - teal
-    6: (7, 249, 178),    # Swamp - cyan-green
-    7: (0, 0, 255),      # River - blue
-    16: (250, 222, 85),  # Beach - sand yellow
-    24: (0, 0, 80),      # Deep Ocean - very dark blue
-    25: (162, 162, 132), # Stone Shore - gray
-    35: (189, 178, 95),  # Savanna - tan
-    37: (217, 69, 21),   # Badlands - orange-red
-    45: (0, 119, 190),   # Lukewarm Ocean - lighter blue
-}
-
-# ESA WorldCover colors (official)
-LAND_COVER_COLORS = {
-    10: (0, 100, 0),     # Tree cover - dark green
-    20: (255, 187, 34),  # Shrubland - orange
-    30: (255, 255, 76),  # Grassland - yellow
-    40: (240, 150, 255), # Cropland - pink
-    50: (250, 0, 0),     # Built-up - red
-    60: (180, 180, 180), # Bare/sparse - gray
-    70: (240, 240, 240), # Snow and ice - white
-    80: (0, 100, 200),   # Water - blue
-    90: (0, 150, 160),   # Wetland - teal
-    95: (0, 207, 117),   # Mangroves - bright green
-    100: (250, 230, 160),# Moss and lichen - beige
-    0: (0, 0, 0),        # No data - black
-}
-
-LAND_COVER_NAMES = {
-    10: "Tree cover",
-    20: "Shrubland",
-    30: "Grassland",
-    40: "Cropland",
-    50: "Built-up",
-    60: "Bare/sparse vegetation",
-    70: "Snow and ice",
-    80: "Permanent water bodies",
-    90: "Herbaceous wetland",
-    95: "Mangroves",
-    100: "Moss and lichen",
-    0: "No data",
-}
-
-BIOME_NAMES = {
-    0: "Ocean",
-    1: "Plains",
-    4: "Forest",
-    5: "Taiga",
-    6: "Swamp",
-    7: "River",
-    16: "Beach",
-    24: "Deep Ocean",
-    25: "Stone Shore",
-    35: "Savanna",
-    37: "Badlands",
-    45: "Lukewarm Ocean",
-}
 
 
 """
@@ -225,7 +146,7 @@ class MapVisualizer:
             plt.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
                       title='Biome Types', framealpha=0.9)
 
-        self._save_plot(output_file, f'Biome Map: {self.config.get("project", {}).get("name", "Map")}')
+        self._save_plot(output_file, f'Biome Map: {self.config["project"]["name"]}')
         
         log.info(f"[v] Biome visualization saved: {output_file}")
 
@@ -261,7 +182,7 @@ class MapVisualizer:
             plt.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
                       title='Land Cover Classes', framealpha=0.9)
             
-        self._save_plot(output_file, f'Land Cover: {self.config.get("project", {}).get("name", "Map")}')
+        self._save_plot(output_file, f'Land Cover: {self.config["project"]["name"]}')
         
         log.info(f"[v] Land cover visualization saved: {output_file}")
 
@@ -298,7 +219,32 @@ class MapVisualizer:
             water_mask = np.array(Image.open(water_mask_file))
             if water_mask.shape == elevation.shape:
                 water_pixels = water_mask > 128
-                rgb[water_pixels] = [0.0, 0.39, 0.78]  # Blue (0, 100, 200) normalized
+                
+                # Bathymetry Visualization
+                water_elev = elevation[water_pixels]
+                if water_elev.size > 0:
+                    w_min, w_max = water_elev.min(), water_elev.max()
+                    if w_max > w_min:
+                        # Normalize depth: 0 = deepest, 1 = shallowest
+                        w_norm = (water_elev - w_min) / (w_max - w_min)
+                    else:
+                        w_norm = np.ones_like(water_elev, dtype=np.float32)
+                    
+                    # Gradient: Dark Blue (Deep) -> Lighter Blue (Shallow)
+                    # Deep: (0, 20, 60) -> (0.0, 0.08, 0.24)
+                    # Shallow: (0, 100, 200) -> (0.0, 0.39, 0.78)
+                    deep_color = np.array([0.0, 0.08, 0.24])
+                    shallow_color = np.array([0.0, 0.39, 0.78])
+                    
+                    # Interpolate
+                    # w_norm needs to be broadcast to (N, 3) 
+                    # shape: (N, 1) * (1, 3) + (N, 1) * (1, 3)
+                    w_norm_expanded = w_norm[:, np.newaxis]
+                    water_colors = (1.0 - w_norm_expanded) * deep_color + w_norm_expanded * shallow_color
+                    
+                    rgb[water_pixels] = water_colors
+                else:
+                    rgb[water_pixels] = [0.0, 0.39, 0.78]
         
         # Apply road mask if available
         if road_mask_file and os.path.exists(road_mask_file):
@@ -319,7 +265,7 @@ class MapVisualizer:
         plt.figure(figsize=(16, 12), dpi=150)
         plt.imshow(rgb, interpolation='nearest') # RGB is floats 0-1
         
-        self._save_plot(output_file, f'Terrain: {self.config.get("project", {}).get("name", "Map")}')
+        self._save_plot(output_file, f'Terrain: {self.config["project"]["name"]}')
         
         log.info(f"[v] Terrain visualization saved: {output_file}")
 
@@ -335,6 +281,11 @@ class MapVisualizer:
         elev = str(source[0])
         water = str(source[1]) if len(source) > 1 else None
         road = str(source[2]) if len(source) > 2 else None
+        
+        # Filter out script files passed as dependencies
+        if water and water.endswith('.py'): water = None
+        if road and road.endswith('.py'): road = None
+            
         self.visualize_terrain(elev, str(target[0]), water_mask_file=water, road_mask_file=road)
         return None
 
@@ -461,7 +412,7 @@ class MapVisualizer:
         # Legend
         handles = [Patch(color=TERRAIN_COLORS[i], label=TERRAIN_NAMES[i]) for i in range(len(TERRAIN_COLORS))]
         ax.legend(handles=handles, loc='lower left', fontsize=10, title='Terrain Types', framealpha=0.9)
-        ax.set_title(f'Terrain Types Analysis: {self.config.get("project", {}).get("name", "Map")}')
+        ax.set_title(f'Terrain Types Analysis: {self.config["project"]["name"]}')
         ax.axis('off')
 
         plt.tight_layout()

@@ -258,7 +258,7 @@ class OsmLoader:
             :param source: SCons source list
             :param env: SCons environment
         '''
-        road_types = list(self.config.get('roads', {}).get('road_widths', {}).keys())
+        road_types = list(self.config['roads']['road_widths'].keys())
         bounds_list = self.config['geospatial']['bounds']
         bounds_tuple = tuple(bounds_list)
         self.download_roads(bounds_tuple, str(target[0]), road_types)

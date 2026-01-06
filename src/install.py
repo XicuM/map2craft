@@ -4,6 +4,8 @@ import sys
 import logging
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 class WorldInstaller:
     def __init__(self, config={}):
         self.config = config
@@ -39,37 +41,36 @@ class WorldInstaller:
         source_dir = Path(str(source[0])).parent
         target_dir = Path(str(target[0])).parent
         
-        print(f"Installing world to: {target_dir}")
+        log.info(f"Installing world to: {target_dir}")
         
         if not source_dir.exists():
-            print(f"Error: Source directory {source_dir} does not exist. Did export fail?")
+            log.error(f"Error: Source directory {source_dir} does not exist. Did export fail?")
             return 1
 
         if target_dir.exists() and any(target_dir.iterdir()):
-             print(f"\nWARNING: Target directory already exists and is not empty: {target_dir}")
+             log.warning(f"Target directory already exists and is not empty: {target_dir}")
              try:
                 # Flush stdout to ensure prompt appears
                 sys.stdout.flush()
                 response = input("Do you want to overwrite it? [y/N]: ").strip().lower()
                 if response not in ['y', 'yes']:
-                    print("Aborting installation by user request.")
-                    # Raise error to stop SCons and signal failure
+                    log.info("Aborting installation by user request.")
                     raise RuntimeError("Installation aborted by user.")
              except EOFError:
-                 print("Non-interactive mode. Overwriting...")
+                 log.info("Non-interactive mode. Overwriting...")
 
              # Remove existing directory if overwriting
              try:
                  shutil.rmtree(target_dir)
              except OSError as e:
-                 print(f"Error removing existing directory: {e}")
+                 log.error(f"Error removing existing directory: {e}")
                  raise
 
         try:
             shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
-            print(f"[v] Successfully installed world to {target_dir}")
+            log.info(f"Successfully installed world to {target_dir}")
         except Exception as e:
-            print(f"Error installing world: {e}")
+            log.error(f"Error installing world: {e}")
             raise
             
         return None

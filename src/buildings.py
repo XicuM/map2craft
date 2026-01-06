@@ -13,25 +13,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-
-"""
-Building processing for map2craft.
-Computes building placements from OSM data.
-"""
-
-import os
-import logging
-import json
-import numpy as np
-import rasterio
-from typing import Dict, List, Tuple
-from pathlib import Path
-
-log = logging.getLogger(__name__)
-
 class BuildingsProcessor:
-    def __init__(self, config=None):
-        self.config = config or {}
+    def __init__(self, config={}):
+        self.config = config
 
     def compute_building_placements(self, buildings_geojson: str, elevation_file: str, 
                                     output_file: str, metadata_file: str,
@@ -46,13 +30,9 @@ class BuildingsProcessor:
         '''
         log.info("Computing building placements...")
         
-        # Load buildings
-        with open(buildings_geojson, 'r') as f:
-            buildings_data = json.load(f)
-        
-        # Load metadata
-        with open(metadata_file, 'r') as f:
-            metadata = json.load(f)
+        # Load buildings and metadata
+        with open(buildings_geojson, 'r') as f: buildings_data = json.load(f)
+        with open(metadata_file, 'r') as f: metadata = json.load(f)
         
         # Load elevation for height lookup
         with rasterio.open(elevation_file) as src:
@@ -110,10 +90,9 @@ class BuildingsProcessor:
             :param source: SCons source list
             :param env: SCons environment
         '''
-        min_area = self.config.get('buildings', {}).get('min_area_sq_m', 25.0)
+        min_area = self.config['buildings']['min_area_sq_m']
         self.compute_building_placements(
             str(source[0]), str(source[1]), str(target[0]),
             str(source[2]), min_area
         )
         return None
-

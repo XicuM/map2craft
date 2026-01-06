@@ -56,11 +56,11 @@ scons
 
 You can run specific parts of the pipeline:
 
-*   **Generate Visualizations**:
+*   **Generate Previews**:
     ```bash
-    scons visualize
+    scons preview
     ```
-    Creates preview images in `output/` (`*_terrain_preview.png`, `*_biome_preview.png`, etc.).
+    Creates preview images in `build/[project_name]/preview/` (`terrain.png`, `biome.png`, etc.).
 
 *   **Process Elevation Only**:
     ```bash

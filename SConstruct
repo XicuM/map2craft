@@ -1,5 +1,4 @@
-import os
-import sys
+import os, sys, logging
 from pathlib import Path
 import yaml
 
@@ -10,11 +9,24 @@ from src import (
     biomes, osm, roads, buildings, waterways, visualize, bathymetry, install
 )
 
+# Set logging config
+logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] (%(name)s) %(levelname)s: %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
 # Load Configuration
-with open("config.yaml", "r") as f: config = yaml.safe_load(f)
+config_name = ARGUMENTS.get('CONFIG', None)
+from src.config_manager import load_config
+config = load_config(config_name)
 
 # Path Setup
 project_name = config['project']['name']
+import logging
+logging.info(f"Loaded project: {project_name}")
 build_dir = Path("build") / project_name
 data_dir = build_dir / "downloads"
 masks_dir = build_dir / "masks"
@@ -48,7 +60,7 @@ env = Environment(ENV=os.environ)
 
 # 1. Elevation & Bathymetry
 elev_raw = str(data_dir / "elevation_raw.tif")
-env.Command(elev_raw, ["config.yaml", "src/data.py"], comp['elev'].download_action)
+env.Command(elev_raw, ["config/default.yaml", "src/data.py"], comp['elev'].download_action)
 
 elev_source = elev_raw
 if has_bathy:
@@ -61,18 +73,18 @@ if has_bathy:
             print("Warning: Bathymetry failed, using land-only.")
         return None
 
-    env.Command(bathy_file, ["config.yaml", "src/bathymetry.py"], dl_bathy)
+    env.Command(bathy_file, ["config/default.yaml", "src/bathymetry.py"], dl_bathy)
     env.Command(elev_with_bathy, [elev_raw, bathy_file, "src/bathymetry.py"], 
                 lambda target, source, env: bathymetry.merge_land_and_bathymetry(str(source[0]), str(source[1]), str(target[0]), 0.0))
     elev_source = elev_with_bathy
 
 # 2. Processing & Land Cover
 elev_proc = str(data_dir / "elevation_epsg3857.tif")
-env.Command(elev_proc, [elev_source, "config.yaml", "src/geospatial.py"], comp['geo'].process_action)
+env.Command(elev_proc, [elev_source, "config/default.yaml", "src/geospatial.py"], comp['geo'].process_action)
 
 lc_file = str(data_dir / "land_cover.tif") if has_biomes else None
 if lc_file:
-    env.Command(lc_file, ["config.yaml", "src/landcover.py"], comp['lc'].download_land_cover_action)
+    env.Command(lc_file, ["config/default.yaml", "src/landcover.py"], comp['lc'].download_land_cover_action)
 
 # 3. Maps & Masks
 heightmap = str(build_dir / "heightmap.png")
@@ -81,12 +93,13 @@ slope_mask = str(masks_dir / "slope_mask.png")
 biome_map = str(build_dir / "biome_map.tif")
 meta_json = str(build_dir / "metadata.json")
 
-env.Command(heightmap, [elev_proc, "config.yaml", "src/geospatial.py"], comp['geo'].heightmap_action)
-env.Command(water_mask, [elev_proc, "config.yaml", "src/masks.py"], comp['mask'].water_mask_action)
-env.Command(slope_mask, [elev_proc, "config.yaml", "src/masks.py"], comp['mask'].slope_mask_action)
-env.Command(meta_json, [elev_proc, "config.yaml", "src/metadata.py"], comp['meta'].metadata_action)
+env.Command(heightmap, [elev_proc, elev_raw, "config/default.yaml", "src/geospatial.py"], comp['geo'].heightmap_action)
+env.Command(water_mask, [elev_proc, "config/default.yaml", "src/masks.py"], comp['mask'].water_mask_action)
+env.Command(slope_mask, [elev_proc, "config/default.yaml", "src/masks.py"], comp['mask'].slope_mask_action)
+env.Command(meta_json, [elev_proc, "config/default.yaml", "src/metadata.py"], comp['meta'].metadata_action)
 
-biome_srcs = [elev_proc] + ([lc_file] if lc_file else []) + ["config.yaml", "src/biomes.py", "src/geometry.py"]
+
+biome_srcs = [elev_proc] + ([lc_file] if lc_file else []) + ["config/default.yaml", "src/biomes.py", "src/geometry.py"]
 env.Command(biome_map, biome_srcs, comp['biome'].biome_map_action)
 
 # 4. OSM Extensions
@@ -94,7 +107,7 @@ def setup_osm(name, flag, loader_act, proc_act, out_name):
     if not flag: return None, None
     raw = str(data_dir / f"{name}.geojson")
     proc = str(build_dir / out_name)
-    env.Command(raw, ["config.yaml", "src/osm.py"], loader_act)
+    env.Command(raw, ["config/default.yaml", "src/osm.py"], loader_act)
     # Special case for buildings requiring metadata
     deps = [raw, elev_proc, meta_json, f"src/{name}.py"] if name == "buildings" else [raw, elev_proc, f"src/{name}.py"]
     env.Command(proc, deps, proc_act)
@@ -105,9 +118,11 @@ bldgs_raw, bldgs_out = setup_osm("buildings", has_buildings, comp['osm'].downloa
 water_raw, river_mask = setup_osm("waterways", has_waterways, comp['osm'].download_waterways_action, comp['water'].river_mask_action, "masks/river_mask.png")
 
 # 5. WorldPainter & Export
-wp_script, wp_world = str(build_dir / "build_world.js"), str(build_dir / "world.world")
-wp_srcs = [heightmap, meta_json, water_mask] + ([biome_map] if has_biomes else []) + [slope_mask, "config.yaml", "src/worldpainter.py"]
+wp_script, wp_world = str(build_dir / "build_world.js"), str(build_dir / f"{project_name}.world")
+
+wp_srcs = [heightmap, meta_json, water_mask, slope_mask, (road_mask or "None")] + ([biome_map] if has_biomes else ["None"]) + ["config/default.yaml", "src/worldpainter.py"]
 env.Command([wp_world, wp_script], wp_srcs, comp['wp'].world_action)
+
 
 export_ldat = str(build_dir / "export" / project_name / "level.dat")
 env.Command(export_ldat, [wp_world], comp['wp'].export_action)
@@ -124,7 +139,7 @@ v_biome = str(preview_dir / "biome.png")
 v_types = str(preview_dir / "terrain_types.png")
 v_lc = str(preview_dir / "land_cover.png")
 
-env.Command(v_terrain, [elev_proc, water_mask, (road_mask or "None"), "src/visualize.py"], comp['viz'].terrain_viz_action)
+env.Command(v_terrain, [heightmap, water_mask, "src/visualize.py"], comp['viz'].terrain_viz_action)
 
 viz_targets = [v_terrain]
 if has_biomes:
@@ -137,11 +152,25 @@ if lc_file:
 
 # Targets & Aliases
 Default(install_ldat)
-alias_map = {
-    'elevation': elev_raw, 'process': elev_proc, 'heightmap': heightmap, 'masks': [water_mask, slope_mask],
-    'biomes': biome_map, 'metadata': meta_json, 'world': wp_world, 'export': export_ldat, 'install': install_ldat,
-    'roads': roads_raw, 'road-mask': road_mask, 'buildings': bldgs_raw, 'building-placements': bldgs_out,
-    'waterways': water_raw, 'river-mask': river_mask, 'visualize': viz_targets
-}
-for name, target in alias_map.items():
-    if target: env.Alias(name, target)
+env.Alias('elevation', elev_raw)
+env.Alias('process', elev_proc)
+env.Alias('heightmap', heightmap)
+env.Alias('masks', [water_mask, slope_mask])
+env.Alias('biomes', biome_map)
+env.Alias('metadata', meta_json)
+env.Alias('world', wp_world)
+env.Alias('export', export_ldat)
+env.Alias('install', install_ldat)
+env.Alias('preview', viz_targets)
+
+if roads_raw:
+    env.Alias('roads', roads_raw)
+    env.Alias('road-mask', road_mask)
+
+if bldgs_raw:
+    env.Alias('buildings', bldgs_raw)
+    env.Alias('building-placements', bldgs_out)
+
+if water_raw:
+    env.Alias('waterways', water_raw)
+    env.Alias('river-mask', river_mask)

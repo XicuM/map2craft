@@ -79,12 +79,12 @@ class MaskGenerator:
 
     def water_mask_action(self, target, source, env):
         ''' SCons action for water mask '''
-        sea_level = self.config.get('masks', {}).get('water_sea_level_m', 0.0)
+        sea_level = self.config['masks']['water_sea_level_m']
         self.create_water_mask(str(source[0]), str(target[0]), sea_level)
         return None
 
     def slope_mask_action(self, target, source, env):
         ''' SCons action for slope mask '''
-        max_slope = self.config.get('masks', {}).get('slope_max_degrees', 60.0)
+        max_slope = self.config['masks']['slope_max_degrees']
         self.create_slope_mask(str(source[0]), str(target[0]), max_slope)
         return None

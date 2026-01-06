@@ -41,9 +41,9 @@ class WaterwaysProcessor:
 
     def river_mask_action(self, target, source, env):
         """SCons action for river mask generation."""
-        wc = self.config.get('waterways', {})
+        wc = self.config['waterways']
         self.generate_river_mask(
             str(source[0]), str(source[1]), str(target[0]),
-            wc.get('river_width_blocks', 4), 
-            wc.get('stream_width_blocks', 2)
+            wc['river_width_blocks'], 
+            wc['stream_width_blocks']
         )

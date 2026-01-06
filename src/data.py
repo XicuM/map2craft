@@ -31,11 +31,11 @@ class ElevationLoader:
         output_file = os.path.join(output_dir, f"{tile_name}.tif")
         
         if os.path.exists(output_file):
-            print(f"  Tile {lat_code}{lon_code} already exists")
+            log.info(f"  Tile {lat_code}{lon_code} already exists")
             return output_file
             
         url = f"https://copernicus-dem-30m.s3.amazonaws.com/{tile_name}/{tile_name}.tif"
-        print(f"  Downloading tile {lat_code}{lon_code} from AWS...")
+        log.info(f"  Downloading tile {lat_code}{lon_code} from AWS...")
         
         try:
             resp = requests.get(url, timeout=120, stream=True)
@@ -45,7 +45,7 @@ class ElevationLoader:
                     f.write(chunk)
             return output_file
         except Exception as e:
-            print(f"  Error downloading {tile_name}: {e}")
+            log.error(f"  Error downloading {tile_name}: {e}")
             return None
 
     def download_elevation(self, bounds, output_path, resolution_meters=30):
@@ -58,7 +58,7 @@ class ElevationLoader:
         '''
         lon_min, lat_min, lon_max, lat_max = bounds
         
-        print(f"Downloading Copernicus DEM for bounds: {bounds}...")
+        log.info(f"Downloading Copernicus DEM for bounds: {bounds}...")
         
         # 1. Determine tiles needed
         margin = 0.02
@@ -67,7 +67,7 @@ class ElevationLoader:
             for lon in range(int(np.floor(lon_min - margin)), int(np.ceil(lon_max + margin))):
                 tiles_needed.append((lat, lon))
                 
-        print(f"Need {len(tiles_needed)} tiles.")
+        log.info(f"Need {len(tiles_needed)} tiles.")
         
         temp_dir = os.path.join(os.path.dirname(output_path), "tiles_temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -83,7 +83,7 @@ class ElevationLoader:
             raise RuntimeError("No tiles downloaded. Check internet connection or bounds.")
             
         # 3. Merge tiles
-        print(f"Merging {len(tile_files)} tiles...")
+        log.info(f"Merging {len(tile_files)} tiles...")
         src_files_to_close = []
         try:
             src_files = []
@@ -107,7 +107,7 @@ class ElevationLoader:
             with rasterio.open(output_path, "w", **out_meta) as dest:
                 dest.write(mosaic)
 
-            print(f"Saved merged elevation to {output_path}")
+            log.info(f"Saved merged elevation to {output_path}")
             
         finally:
             for src in src_files_to_close:
@@ -115,7 +115,7 @@ class ElevationLoader:
 
     def download_action(self, target, source, env):
         ''' SCons action to download elevation.
-            
+
             :param target: SCons target list
             :param source: SCons source list
             :param env: SCons environment

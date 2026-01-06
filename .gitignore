@@ -23,3 +23,7 @@ build/
 *.geojson
 *.png
 !src/**/*.png
+
+# Config
+config/*.yaml
+!config/default.yaml
