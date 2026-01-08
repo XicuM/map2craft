@@ -79,7 +79,7 @@ class LandCoverProcessor:
                 log.warning(f"  [x] No WorldCover data found in range 2020-{current_year}")
                 return False
 
-            log.info(f"  [v] Found {len(items)} tiles for year {final_year}")
+            log.info(f"  [✓] Found {len(items)} tiles for year {final_year}")
             
             sources = []
             for item in items:
@@ -118,7 +118,7 @@ class LandCoverProcessor:
             ) as dst:
                 dst.write(mosaic[0], 1)
                 
-            log.info(f"  [v] Land cover saved: {output_file}")
+            log.info(f"  [✓] Land cover saved: {output_file}")
             self.print_land_cover_stats(output_file)
             return True
             
@@ -139,11 +139,10 @@ class LandCoverProcessor:
         log.info(f"  Size: {data.shape[1]} x {data.shape[0]} pixels")
         
         unique, counts = np.unique(data, return_counts=True)
-        total = data.size
         
         for value, count in zip(unique, counts):
             name = LAND_COVER_NAMES.get(int(value), f"Unknown ({int(value)})")
-            percentage = (count / total) * 100
+            percentage = (count / data.size) * 100
             log.info(f"  {name}: {percentage:.1f}%")
 
     def download_land_cover_action(self, target, source, env):

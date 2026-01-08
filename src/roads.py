@@ -116,7 +116,7 @@ class RoadsProcessor:
         ) as dst:
             dst.write(road_mask, 1)
         
-        log.info(f"[v] Road mask saved: {output_file}")
+        log.info(f"[✓] Road mask saved: {output_file}")
         log.info(f"  Roads rasterized: {len(shapes)}")
 
     def road_mask_action(self, target, source, env):

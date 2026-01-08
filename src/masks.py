@@ -57,7 +57,7 @@ class MaskGenerator:
             img = Image.fromarray(water_mask, mode='L')
             img.save(output_file)
         
-        log.info(f"[v] Water mask saved: {output_file}")
+        log.info(f"[✓] Water mask saved: {output_file}")
 
 
     def create_slope_mask(self, elevation_file: str, output_file: str, max_slope: float = 60.0) -> None:
@@ -75,7 +75,7 @@ class MaskGenerator:
             os.makedirs(os.path.dirname(output_file), exist_ok=True)
             Image.fromarray(slope_mask, mode='L').save(output_file)
         
-        log.info(f"[v] Slope mask saved: {output_file}")
+        log.info(f"[✓] Slope mask saved: {output_file}")
 
     def water_mask_action(self, target, source, env):
         ''' SCons action for water mask '''

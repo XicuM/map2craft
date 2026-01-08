@@ -47,44 +47,39 @@ def compute_pixel_size_meters(transform: Affine, crs, shape: Tuple[int, int]) ->
         
         :return: (px_meters, py_meters) - pixel size in meters for X and Y directions
     '''
-    try:
-        # Pixel size in CRS units
-        px = abs(transform.a)
-        py = abs(transform.e)
+    # Pixel size in CRS units
+    px = abs(transform.a)
+    py = abs(transform.e)
 
-        # If projected and units are meters, return directly
-        if crs is not None and crs.is_projected:
-            return px, py
+    # If projected and units are meters, return directly
+    if crs is not None and crs.is_projected: return px, py
 
-        # Geographic CRS (degrees): approximate meters per degree at center
-        from pyproj import Geod
-        height, width = shape
-        
-        # Center pixel indices
-        c = width / 2.0
-        r = height / 2.0
-        
-        # Transform pixel center to geographic coords
-        x_center = transform.c + c * transform.a + r * transform.b
-        y_center = transform.f + c * transform.d + r * transform.e
-        
-        geod = Geod(ellps='WGS84')
-        
-        # X step (longitude)
-        x2 = x_center + px
-        _, _, dist_x = geod.inv(x_center, y_center, x2, y_center)
-        
-        # Y step (latitude)
-        y2 = y_center + (py if transform.e > 0 else -py)
-        _, _, dist_y = geod.inv(x_center, y_center, x_center, y2)
-        
-        dist_x = abs(dist_x) if dist_x else 30.0
-        dist_y = abs(dist_y) if dist_y else 30.0
-        
-        return dist_x, dist_y
-    except Exception:
-        # Conservative fallback
-        return 30.0, 30.0
+    # Geographic CRS (degrees): approximate meters per degree at center
+    from pyproj import Geod
+    height, width = shape
+    
+    # Center pixel indices
+    c = width/2.0
+    r = height/2.0
+    
+    # Transform pixel center to geographic coords
+    x_center = transform.c + c * transform.a + r * transform.b
+    y_center = transform.f + c * transform.d + r * transform.e
+    
+    geod = Geod(ellps='WGS84')
+    
+    # X step (longitude)
+    x2 = x_center + px
+    _, _, dist_x = geod.inv(x_center, y_center, x2, y_center)
+    
+    # Y step (latitude)
+    y2 = y_center + (py if transform.e > 0 else -py)
+    _, _, dist_y = geod.inv(x_center, y_center, x_center, y2)
+    
+    dist_x = abs(dist_x) if dist_x else 30.0
+    dist_y = abs(dist_y) if dist_y else 30.0
+    
+    return dist_x, dist_y
 
 
 def latlon_to_pixel(lon: float, lat: float, transform: Affine) -> Tuple[int, int]:

@@ -130,7 +130,7 @@ class BiomeMapper:
             with rasterio.open(output_file, 'w', **profile) as dst:
                 dst.write(biome_map, 1)
         
-        log.info(f"[v] Biome map saved: {output_file}")
+        log.info(f"[✓] Biome map saved: {output_file}")
 
     def biome_map_action(self, target, source, env):
         ''' SCons action for biome map.

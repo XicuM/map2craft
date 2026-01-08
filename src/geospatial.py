@@ -52,15 +52,51 @@ class TerrainProcessor:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             with rasterio.open(output_path, 'w', **kwargs) as dst:
+                # 1. Resample Elevation using Cubic for smooth terrain
+                # We do this into a memory array first so we can read and modify it
+                elev_dst = np.zeros((height, width), dtype=np.float32)
+                
                 reproject(
                     source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
+                    destination=elev_dst,
                     src_transform=src.transform,
                     src_crs=src.crs,
                     dst_transform=transform,
                     dst_crs=target_crs,
-                    resampling=Resampling.bilinear
+                    resampling=Resampling.cubic
                 )
+                
+                # 2. Coastline Preservation: 
+                # Resample a binary "Land Mask" using Nearest neighbor to keep it sharp
+                # Create a binary mask of the source land (elev >= 0)
+                src_data = src.read(1)
+                land_mask_src = (src_data >= 0).astype(np.float32)
+                
+                land_mask_dst = np.zeros_like(elev_dst, dtype=np.float32)
+                reproject(
+                    source=land_mask_src,
+                    destination=land_mask_dst,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=target_crs,
+                    resampling=Resampling.nearest  # Sharp!
+                )
+                
+                # Fix Coastline: Ensure land pixels have elevation >= 0 and water pixels < 0
+                # Using 0.01/-0.01 as small buffers to avoid ambiguity
+                land_indices = land_mask_dst >= 0.5
+                water_indices = land_mask_dst < 0.5
+                
+                # Force Land to be >= 0.01m if Cubic made it < 0
+                land_correction = (land_indices) & (elev_dst < 0)
+                elev_dst[land_correction] = 0.01
+                
+                # Force Water to be < 0m if Cubic made it >= 0
+                water_correction = (water_indices) & (elev_dst >= 0)
+                elev_dst[water_correction] = -0.01
+                
+                dst.write(elev_dst, 1)
         log.info(f"Terrain processed.")
 
     def generate_heightmap_image(self, input_path, output_path, land_reference_path=None):
@@ -76,11 +112,13 @@ class TerrainProcessor:
         # Config
         mp = self.config['minecraft']
         min_build = mp['build_limit']['min']
-        max_build = mp['build_limit']['max']
+        max_build = mp['build_limit']['max'] 
+        vertical_scale = mp['scale']['vertical']
         
         # Target Y level for 0m elevation (terrain at sea level)
-        # This should be 62, so water at Y=63 is one block above the terrain
-        sea_level_y = 62
+        # Using configured sea level (usually 63). 
+        # If sea_level is 63, then 0m elevation maps to Y=63.
+        sea_level_y = mp.get('sea_level', 63)
         
         min_elev_limit = -10000 # Safety floor
         
@@ -102,24 +140,37 @@ class TerrainProcessor:
             except Exception as e:
                 log.warning(f"Failed to read land reference {land_reference_path}: {e}")
         
-        # Calculate Smart Range
-        # Goal: Map 0m to sea_level_y, and land_max to max_build
-        # Scale (blocks per meter)
-        elevation_range_land = max(land_max, 1.0)
-        blocks_above_sea = max_build - sea_level_y
+        if mp['scale']['auto_fit']:
+            # AUTO-FIT MODE: Scale to fill build limits
+            # Goal: Map 0m to sea_level_y, and land_max to max_build
+            # Scale (blocks per meter)
+            elevation_range_land = max(land_max, 1.0)
+            blocks_above_sea = max_build - sea_level_y
+            
+            if blocks_above_sea <= 0: blocks_above_sea = 100 # Sanity check
+            
+            scale_factor = blocks_above_sea / elevation_range_land
+            
+            # Calculate the theoretical meter values that correspond to min_build and max_build
+            # Y = Y_sea + (Elev - 0) * Scale
+            # Elev = (Y - Y_sea) / Scale
+            
+            calc_max_elev = (max_build - sea_level_y) / scale_factor # Should be land_max
+            calc_min_elev = (min_build - sea_level_y) / scale_factor
+            
+            log.info(f"Auto-fit scaling: Land Peak {land_max}m -> Y={max_build}. Sea Level 0m -> Y={sea_level_y}.")
+        else:
+            # NATURAL SCALE MODE: Use configured vertical scale
+            # Scale factor is 1 block per N meters
+            scale_factor = 1.0 / vertical_scale  # blocks per meter
+            
+            # Calculate elevation range based on natural scale
+            # We still want 0m at sea_level_y, but heights are determined by natural scale
+            calc_max_elev = (max_build - sea_level_y) / scale_factor
+            calc_min_elev = (min_build - sea_level_y) / scale_factor
+            
+            log.info(f"Natural scaling: {vertical_scale}m per block. Sea Level 0m -> Y={sea_level_y}.")
         
-        if blocks_above_sea <= 0: blocks_above_sea = 100 # Sanity check
-        
-        scale_factor = blocks_above_sea / elevation_range_land
-        
-        # Calculate the theoretical meter values that correspond to min_build and max_build
-        # Y = Y_sea + (Elev - 0) * Scale
-        # Elev = (Y - Y_sea) / Scale
-        
-        calc_max_elev = (max_build - sea_level_y) / scale_factor # Should be land_max
-        calc_min_elev = (min_build - sea_level_y) / scale_factor
-        
-        log.info(f"Smart Scaling: Land Peak {land_max}m -> Y={max_build}. Sea Level 0m -> Y={sea_level_y}.")
         log.info(f"Clipping Range: {calc_min_elev:.2f}m to {calc_max_elev:.2f}m")
         
         with rasterio.open(input_path) as src:
@@ -149,7 +200,9 @@ class TerrainProcessor:
                 "min_meters": calc_min_elev,
                 "max_meters": calc_max_elev,
                 "scale_factor_vertical": scale_factor,
-                "sea_level_block": sea_level_y
+                "sea_level_block": sea_level_y,
+                "min_y": min_build,
+                "max_y": max_build
             }, f, indent=2)
             
         log.info("Heightmap generated.")

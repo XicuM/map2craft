@@ -17,7 +17,7 @@ class WorldInstaller:
         '''
         # Allow override from config
         if 'minecraft' in self.config and 'saves_dir' in self.config['minecraft']:
-             return Path(self.config['minecraft']['saves_dir'])
+            return Path(self.config['minecraft']['saves_dir'])
         
         # Allow override from env
         if os.environ.get('MINECRAFT_SAVES_DIR'):
@@ -48,23 +48,22 @@ class WorldInstaller:
             return 1
 
         if target_dir.exists() and any(target_dir.iterdir()):
-             log.warning(f"Target directory already exists and is not empty: {target_dir}")
-             try:
+            log.warning(f"Target directory already exists and is not empty: {target_dir}")
+            try:
                 # Flush stdout to ensure prompt appears
                 sys.stdout.flush()
                 response = input("Do you want to overwrite it? [y/N]: ").strip().lower()
                 if response not in ['y', 'yes']:
                     log.info("Aborting installation by user request.")
                     raise RuntimeError("Installation aborted by user.")
-             except EOFError:
-                 log.info("Non-interactive mode. Overwriting...")
+            except EOFError:
+                log.info("Non-interactive mode. Overwriting...")
 
-             # Remove existing directory if overwriting
-             try:
-                 shutil.rmtree(target_dir)
-             except OSError as e:
-                 log.error(f"Error removing existing directory: {e}")
-                 raise
+            # Remove existing directory if overwriting
+            try: shutil.srmtree(target_dir)
+            except OSError as e:
+                log.error(f"Error removing existing directory: {e}")
+                raise
 
         try:
             shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)

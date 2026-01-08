@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple, Optional
 import requests
+from pyproj import Transformer
 
 log = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ out geom;"""
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, 'w', encoding='utf-8') as f:
             json.dump(geojson, f, indent=2)
-        log.info(f"[v] Saved {len(geojson['features'])} features to {target}")
+        log.info(f"[✓] Saved {len(geojson['features'])} features to {target}")
 
 
 
@@ -184,7 +185,8 @@ class OsmLoader:
         client._save_geojson(geojson, Path(output_file))
 
 
-    def download_buildings(self, bounds: Tuple[float, float, float, float], output_file: str) -> None:
+    def download_buildings(self, bounds: Tuple[float, float, float, float], output_file: str,
+                          building_types: List[str] = None) -> None:
         ''' Download building data from OpenStreetMap.
         
             :param tuple bounds: Bounding box (lon_min, lat_min, lon_max, lat_max)
@@ -194,10 +196,18 @@ class OsmLoader:
         
         client = OSMClient(bounds)
         
-        # Query for all buildings
+        # Join types for regex OR match
+        # Map 'well' to 'water_well' for man_made tags
+        mm_types = [t if t != 'well' else 'water_well' for t in building_types]
+        
+        types_regex = f"^({'|'.join(building_types)})$"
+        mm_regex = f"^({'|'.join(mm_types)})$"
+        
         elements = [
-            'way["building"]',
-            'node["building"]',
+            f'way["building"~"{types_regex}"]',
+            f'node["building"~"{types_regex}"]',
+            f'way["man_made"~"{mm_regex}"]',
+            f'node["man_made"~"{mm_regex}"]',
         ]
         
         osm_data = client._execute_query(client._build_query(elements))
@@ -205,6 +215,32 @@ class OsmLoader:
         # Convert to point features (centroids for ways)
         features = []
         for element in osm_data.get('elements', []):
+            tags = element.get('tags', {})
+            
+            # Filter by name: at least one name tag must exist and properly describe the object
+            name_found = False
+            for k, v in tags.items():
+                if (k == 'name' or k.startswith('name:') or k == 'alt_name') and v:
+                    if v.strip().lower() not in ['', 'unknown']:
+                        name_found = True
+                        break
+            
+            if not name_found:
+                continue
+            
+            # Normalize tags: Prioritize specific types over generic 'building=yes'
+            # Landmark objects often have both building=yes and man_made=lighthouse
+            b_val = tags.get('building')
+            mm_val = tags.get('man_made')
+            
+            if mm_val:
+                # Map back water_well to well for consistency
+                norm_mm = 'well' if mm_val == 'water_well' else mm_val
+                
+                # If building tag is generic or missing, use the more specific man_made tag
+                if not b_val or b_val == 'yes' or b_val == 'building':
+                    tags['building'] = norm_mm
+            
             if element['type'] == 'node':
                 geometry = {
                     'type': 'Point',
@@ -217,6 +253,17 @@ class OsmLoader:
                     lon_avg = sum(c[0] for c in coords) / len(coords)
                     lat_avg = sum(c[1] for c in coords) / len(coords)
                     geometry = {'type': 'Point', 'coordinates': [lon_avg, lat_avg]}
+                    
+                    # Calculate approximate area in sq meters (using EPSG:3857 for simplicity)
+                    try:
+                        transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+                        proj_coords = [transformer.transform(lon, lat) for lon, lat in coords]
+                        # Shoelace formula for area
+                        area = 0.5 * abs(sum(proj_coords[i][0] * proj_coords[i+1][1] - proj_coords[i+1][0] * proj_coords[i][1]
+                                            for i in range(len(proj_coords)-1)))
+                        element['tags']['area_sq_m'] = area
+                    except Exception:
+                        element['tags']['area_sq_m'] = 0
                 else:
                     continue
             else:
@@ -273,7 +320,11 @@ class OsmLoader:
         '''
         bounds_list = self.config['geospatial']['bounds']
         bounds_tuple = tuple(bounds_list)
-        self.download_buildings(bounds_tuple, str(target[0]))
+        
+        # Get building types from config
+        building_types = self.config.get('buildings', {}).get('types', [])
+        
+        self.download_buildings(bounds_tuple, str(target[0]), building_types)
         return None
 
     def download_waterways_action(self, target, source, env):

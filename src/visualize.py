@@ -1,6 +1,3 @@
-
-
-
 """
 Visualization tools for map2craft.
 Generate preview images for terrain, biomes, and land cover.
@@ -8,11 +5,14 @@ Generate preview images for terrain, biomes, and land cover.
 
 import os
 import logging
+import json
 import numpy as np
 import rasterio
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
 from typing import Dict, Tuple, Optional
 
 log = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ class MapVisualizer:
 
         self._save_plot(output_file, f'Biome Map: {self.config["project"]["name"]}')
         
-        log.info(f"[v] Biome visualization saved: {output_file}")
+        log.info(f"[✓] Biome visualization saved: {output_file}")
 
 
     def visualize_land_cover(self, land_cover_file: str, output_file: str) -> None:
@@ -184,7 +184,7 @@ class MapVisualizer:
             
         self._save_plot(output_file, f'Land Cover: {self.config["project"]["name"]}')
         
-        log.info(f"[v] Land cover visualization saved: {output_file}")
+        log.info(f"[✓] Land cover visualization saved: {output_file}")
 
 
     def visualize_terrain(self, elevation_file: str, output_file: str, 
@@ -267,7 +267,148 @@ class MapVisualizer:
         
         self._save_plot(output_file, f'Terrain: {self.config["project"]["name"]}')
         
-        log.info(f"[v] Terrain visualization saved: {output_file}")
+        log.info(f"[✓] Terrain visualization saved: {output_file}")
+
+    def visualize_building_placements(self, placements_file: str, output_file: str,
+                                      heightmap_file: str = None,
+                                      water_mask_file: str = None) -> None:
+        ''' Create a visualization of building placements overlaid on terrain.
+        
+            :param str placements_file: Path to building_placements.json
+            :param str output_file: Path to save visualization PNG
+            :param str heightmap_file: Optional heightmap for terrain background
+            :param str water_mask_file: Optional water mask for context
+        '''
+        log.info("Generating building placement visualization...")
+        
+        # Load building placements
+        try:
+            with open(placements_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            placements = data.get('placements', [])
+            building_count = data.get('count', len(placements))
+        except Exception as e:
+            log.error(f"Failed to load building placements: {e}")
+            return
+        
+        if not placements:
+            log.warning("No building placements found")
+            return
+        
+        # Create base visualization
+        if heightmap_file and os.path.exists(heightmap_file):
+            # Use heightmap as background
+            heightmap = np.array(Image.open(heightmap_file), dtype=np.uint16)
+            height, width = heightmap.shape
+            
+            # Normalize heightmap to 0-1
+            h_min, h_max = heightmap.min(), heightmap.max()
+            if h_max > h_min:
+                normalized = (heightmap - h_min) / (h_max - h_min)
+            else:
+                normalized = np.zeros_like(heightmap, dtype=np.float32)
+            
+            # Convert to grayscale RGB
+            rgb = np.stack([normalized] * 3, axis=-1)
+            
+            # Apply water mask if available
+            if water_mask_file and os.path.exists(water_mask_file):
+                try:
+                    water_mask = np.array(Image.open(water_mask_file))
+                    if water_mask.shape == heightmap.shape:
+                        water_pixels = water_mask > 128
+                        # Light blue for water
+                        rgb[water_pixels] = [0.7, 0.85, 1.0]
+                except Exception as e:
+                    log.warning(f"Could not apply water mask: {e}")
+        else:
+            # Create blank canvas based on first placement
+            height = width = 1000  # Default size
+            rgb = np.ones((height, width, 3), dtype=np.float32) * 0.9
+        
+        # Plot
+        fig, ax = plt.subplots(figsize=(16, 12), dpi=150)
+        ax.imshow(rgb, interpolation='nearest')
+        
+        # Define mapping for building types (color, marker)
+        # Markers: o (circle), s (square), ^ (triangle), D (diamond), * (star), P (plus)
+        TYPE_STYLES = {
+            'cathedral': ('purple', 'P'),
+            'church': ('blue', 's'),
+            'lighthouse': ('yellow', 'D'),
+            'windmill': ('orange', '^'),
+            'tower': ('green', 'o'),
+            'well': ('cyan', '*'),
+            'building': ('red', 'o') # Default
+        }
+        DEFAULT_STYLE = ('red', 'o')
+
+        # Group coordinates by type
+        typed_coords = {} # type -> (x_list, y_list)
+        
+        for placement in placements:
+            x = placement.get('pixel_x')
+            y = placement.get('pixel_y')
+            if x is None or y is None: continue
+            
+            # Check bounds
+            if not (0 <= x < width and 0 <= y < height): continue
+                
+            # Determine type
+            props = placement.get('properties', {})
+            b_type = props.get('building', 'building')
+            
+            # If the primary building tag is generic, look for more specific tags in properties
+            if b_type in ['yes', 'building', 'true']:
+                # Order of priority for landmark identification
+                for tag_key in ['man_made', 'historic', 'amenity', 'tourism']:
+                    val = props.get(tag_key)
+                    if val and val != 'yes':
+                        b_type = val
+                        break
+
+            if b_type not in TYPE_STYLES:
+                # Check if it matches any known types as a fallback
+                found = False
+                for kt in TYPE_STYLES:
+                    if kt in b_type.lower():
+                        b_type = kt
+                        found = True
+                        break
+                if not found: b_type = 'building'
+
+            if b_type not in typed_coords: typed_coords[b_type] = ([], [])
+            typed_coords[b_type][0].append(x)
+            typed_coords[b_type][1].append(y)
+        
+        # Plot each group
+        if typed_coords:
+            for b_type, (xs, ys) in typed_coords.items():
+                color, marker = TYPE_STYLES.get(b_type, DEFAULT_STYLE)
+                ax.scatter(xs, ys, c=color, marker=marker, s=40, alpha=0.9, 
+                          label=f'{b_type.capitalize()} ({len(xs)})', 
+                          edgecolors='black', linewidths=0.5)
+            
+            # Add legend
+            ax.legend(loc='upper right', fontsize=10, framealpha=0.9, title="Building Types")
+            log.info(f"Plotted buildings for types: {', '.join(typed_coords.keys())}")
+        
+        else: log.warning("No valid building coordinates to plot")
+        
+        # Title and formatting
+        ax.set_title(
+            f'Building Placements: {self.config["project"]["name"]} ({building_count} total)', 
+            fontsize=14, fontweight='bold'
+        )
+        ax.axis('off')
+        
+        # Save
+        plt.tight_layout()
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        plt.savefig(output_file, bbox_inches='tight', dpi=150)
+        plt.close()
+        
+        log.info(f"[✓] Building placement visualization saved: {output_file}")
 
     def biome_viz_action(self, target, source, env):
         self.visualize_biomes(str(source[0]), str(target[0]))
@@ -289,12 +430,16 @@ class MapVisualizer:
         self.visualize_terrain(elev, str(target[0]), water_mask_file=water, road_mask_file=road)
         return None
 
-    def visualize_terrain_types(self, heightmap_file: str, output_file: str,
-                              metadata_file: str,
-                              water_mask_file: str = None,
-                              biome_map_file: str = None,
-                              road_mask_file: str = None,
-                              steep_slopes_mask_file: str = None) -> None:
+    def visualize_terrain_types(
+        self,
+        heightmap_file: str,
+        output_file: str,
+        metadata_file: str,
+        water_mask_file: str = None,
+        biome_map_file: str = None,
+        road_mask_file: str = None,
+        steep_slopes_mask_file: str = None
+    ) -> None:
         ''' Create terrain type classification visualization.
         
             :param str heightmap_file: Path to heightmap PNG
@@ -419,7 +564,7 @@ class MapVisualizer:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
         plt.close()
-        log.info(f"[v] Terrain type visualization saved: {output_file}")
+        log.info(f"[✓] Terrain type visualization saved: {output_file}")
 
 
     def terrain_types_viz_action(self, target, source, env):
@@ -442,6 +587,26 @@ class MapVisualizer:
             biome_map_file=biome,
             road_mask_file=road_mask,
             steep_slopes_mask_file=steep
+        )
+        return None
+
+    def building_viz_action(self, target, source, env):
+        ''' SCons action for building placement visualization.
+            source: building_placements.json, heightmap, water_mask
+        '''
+        placements = str(source[0])
+        heightmap = str(source[1]) if len(source) > 1 else None
+        water = str(source[2]) if len(source) > 2 else None
+        
+        # Filter out script files
+        if heightmap and heightmap.endswith('.py'): heightmap = None
+        if water and water.endswith('.py'): water = None
+        
+        self.visualize_building_placements(
+            placements_file=placements,
+            output_file=str(target[0]),
+            heightmap_file=heightmap,
+            water_mask_file=water
         )
         return None
 

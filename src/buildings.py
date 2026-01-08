@@ -10,6 +10,7 @@ import numpy as np
 import rasterio
 from typing import Dict, List, Tuple
 from pathlib import Path
+from pyproj import Transformer
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ class BuildingsProcessor:
         with rasterio.open(elevation_file) as src:
             elevation = src.read(1)
             transform = src.transform
+            raster_crs = src.crs
+        
+        # Setup coordinate transformation from WGS84 to Raster CRS
+        transformer = Transformer.from_crs("EPSG:4326", raster_crs, always_xy=True)
         
         placements = []
         
@@ -45,14 +50,25 @@ class BuildingsProcessor:
             props = feature['properties']
             geom = feature['geometry']
             
+            # Filter by area if available
+            area = props.get('area_sq_m', 0)
+            if area < min_area and 'building' in props:
+                # If area is explicitly 0 but it's a building way, we might have failed calculation
+                # Nodes (points) won't have area, so we keep them if they are explicitly marked as buildings
+                if area > 0 or geom['type'] != 'Point': 
+                     continue
+            
             if geom['type'] != 'Point':
                 continue
             
             lon, lat = geom['coordinates']
             
+            # Project to terrain CRS
+            proj_x, proj_y = transformer.transform(lon, lat)
+            
             # Convert to pixel coordinates
-            from . import geometry
-            col, row = geometry.latlon_to_pixel(lon, lat, transform)
+            from src import geometry
+            col, row = geometry.latlon_to_pixel(proj_x, proj_y, transform)
             
             # Check bounds
             if 0 <= row < elevation.shape[0] and 0 <= col < elevation.shape[1]:
@@ -65,6 +81,7 @@ class BuildingsProcessor:
                     'elevation': elev,
                     'pixel_x': col,
                     'pixel_y': row,
+                    'area': area,
                     'properties': props
                 }
                 placements.append(placement)
@@ -80,7 +97,7 @@ class BuildingsProcessor:
         with open(output_file, 'w') as f:
             json.dump(output_data, f, indent=2)
         
-        log.info(f"[v] Building placements saved: {output_file}")
+        log.info(f"[✓] Building placements saved: {output_file}")
         log.info(f"  Buildings placed: {len(placements)}")
 
     def building_placements_action(self, target, source, env):
@@ -90,7 +107,7 @@ class BuildingsProcessor:
             :param source: SCons source list
             :param env: SCons environment
         '''
-        min_area = self.config['buildings']['min_area_sq_m']
+        min_area = self.config['buildings'].get('min_area_sq_m', 0)
         self.compute_building_placements(
             str(source[0]), str(source[1]), str(target[0]),
             str(source[2]), min_area

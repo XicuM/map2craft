@@ -37,7 +37,7 @@ class WaterwaysProcessor:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(mask, mode='L').save(out_path)
         
-        log.info(f"[v] River mask saved: {out_path} ({len(shapes)} features)")
+        log.info(f"[✓] River mask saved: {out_path} ({len(shapes)} features)")
 
     def river_mask_action(self, target, source, env):
         """SCons action for river mask generation."""
