@@ -1,27 +1,29 @@
-# map2craft configuration
+# map2craft default configuration
+
+# Project
 project:
   name: "default"
+  game_mode: "creative" # survival, creative, adventure, spectator
 
+# Geospatial
 geospatial:
   bounds: [1.15, 38.62, 1.67, 39.13]  # lon_min, lat_min, lon_max, lat_max
   crs: "EPSG:3857"  # Web Mercator for meter-based processing
-  resolution: 30  # meters per pixel (30m matches Copernicus/SRTM source) 
 
 # Bathymetry (underwater elevation)
 bathymetry:
   enabled: true  # Set to true to download and merge underwater elevation
-  margin_km: 10   # Margin around bounds for bathymetry download
+  margin_km: 0   # Margin around bounds for bathymetry download
 
 minecraft:
   version: "1.20.5"
-  sea_level: 63
+  sea_level: 62
   build_limit:
     min: -64
     max: 320
   scale:
     horizontal: 20
     vertical: 10
-    scale_percent: 100
     auto_fit: false
 
 # Biomes
@@ -34,16 +36,14 @@ biomes:
 
 # Masks
 masks:
-  water_sea_level_m: 0.0
+  water_sea_level_m: 1.0  # Raised to submerge shallow coastal artifacts
   slope_max_degrees: 60.0
 
 # Metadata
 metadata:
   longitude_km_factor: 85
   latitude_km_factor: 111
-  minecraft_sea_level_y: 62
   worldpainter_default_water_level_y: 62
-  worldpainter_scale_percent: 100
 
 # Roads (OpenStreetMap)
 roads:
@@ -60,23 +60,23 @@ roads:
 # Buildings (OpenStreetMap)
 buildings:
   enabled: true
+  schematics_dir: "assets/schematics"
   types:
-    - cathedral
-    - church
-    - lighthouse
-    - windmill
-    - tower
-    - well
+    - name: cathedral
+      schematic: "catedral.schematic"
+    - name: church
+      schematic: "esglesia.schematic"
+    - name: lighthouse
+      schematic: "far.schematic"
+    - name: windmill
+      schematic: "moli.schematic"
+    - name: tower
+      schematic: "torre.schematic"
+    - name: well
+      schematic: "pou.schematic"
 
 # Waterways (OpenStreetMap)
 waterways:
   enabled: true
   stream_width_blocks: 2
   river_width_blocks: 4
-
-worldpainter:
-  path: "C:/Program Files/WorldPainter"
-
-amulet:
-  enabled: true
-  schematics_dir: "schematics"

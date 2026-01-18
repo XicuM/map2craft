@@ -3,11 +3,11 @@ Generate metadata JSON file for WorldPainter script.
 Contains all necessary information for world generation.
 """
 
-import os
 import json
 import logging
 import numpy as np
 import rasterio
+from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
 
 log = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class MetadataGenerator:
         self.config = config or {}
 
     def generate_metadata(self, elevation_file: str, output_file: str, bounds: Dict[str, float], 
-                        scale_down: int) -> None:
+                        scale_down: int, is_pre_scaled: bool = False) -> None:
         ''' Generate metadata JSON from elevation data.
         
             :param str elevation_file: Path to elevation GeoTIFF
@@ -33,6 +33,11 @@ class MetadataGenerator:
         with rasterio.open(elevation_file) as src:
             elevation = src.read(1).astype(np.float32)
             elevation = np.nan_to_num(elevation, nan=0.0)
+            
+            if is_pre_scaled:
+                v_scale = float(self.config['minecraft']['scale']['vertical'])
+                log.info(f" Converting pre-scaled elevation (blocks) to meters for metadata (scale: {v_scale})")
+                elevation *= v_scale
             height, width = elevation.shape
             
             # Extract config values
@@ -43,9 +48,8 @@ class MetadataGenerator:
             lat_km_factor = meta_cfg['latitude_km_factor']
             min_y = mc_cfg['build_limit']['min']
             max_y = mc_cfg['build_limit']['max']
-            sea_level_y = meta_cfg['minecraft_sea_level_y']
+            sea_level_y = mc_cfg['sea_level']
             water_level_y = meta_cfg['worldpainter_default_water_level_y']
-            scale_percent = meta_cfg['worldpainter_scale_percent']
             
             lon_min = bounds['lon_min']
             lat_min = bounds['lat_min']
@@ -59,80 +63,77 @@ class MetadataGenerator:
             mc_width = width * scale_down
             mc_height = height * scale_down
             
-            metadata = {
-                "name": self.config['project']['name'],
-                "description": f"Realistic terrain generated from real elevation data",
-                "version": "1.0.0",
-                "generated": None,  # Will be set by JS script
-                "geographic": {
-                    "bounds": {
-                        "lon_min": lon_min,
-                        "lat_min": lat_min,
-                        "lon_max": lon_max,
-                        "lat_max": lat_max
+            with open(output_file, 'w') as f: 
+                json.dump({
+                    "name": self.config['project']['name'],
+                    "description": f"Realistic terrain generated from real elevation data",
+                    "version": "1.0.0",
+                    "generated": None,  # Will be set by JS script
+                    "geographic": {
+                        "bounds": {
+                            "lon_min": lon_min,
+                            "lat_min": lat_min,
+                            "lon_max": lon_max,
+                            "lat_max": lat_max
+                        },
+                        "center": {
+                            "lon": (lon_min + lon_max) / 2,
+                            "lat": (lat_min + lat_max) / 2
+                        },
+                        "dimensions_km": {
+                            "width": width_km,
+                            "height": height_km
+                        }
                     },
-                    "center": {
-                        "lon": (lon_min + lon_max) / 2,
-                        "lat": (lat_min + lat_max) / 2
+                    "terrain": {
+                        "elevation": {
+                            "min_meters": min_elev,
+                            "max_meters": max_elev,
+                            "mean_meters": float(elevation.mean()),
+                            "range_meters": max_elev - min_elev
+                        },
+                        "heightmap": {
+                            "width_pixels": width,
+                            "height_pixels": height,
+                            "bit_depth": 16
+                        },
+                        "sea_level_meters": 0
                     },
-                    "dimensions_km": {
-                        "width": width_km,
-                        "height": height_km
+                    "minecraft": {
+                        "scale": {
+                            "factor": scale_down,
+                            "description": f"1:{scale_down} (1 block = {scale_down} meter(s))"
+                        },
+                        "dimensions_blocks": {
+                            "width": mc_width,
+                            "height": mc_height
+                        },
+                        "height_mapping": {
+                            "min_minecraft_y": min_y,
+                            "max_minecraft_y": max_y,
+                            "sea_level_y": sea_level_y,
+                            "description": "Maps real elevation to Minecraft Y coordinates"
+                        }
+                    },
+                    "worldpainter": {
+                        "suggested_settings": {
+                            "default_water_level": water_level_y,
+                            "map_format": f"org.pepsoft.anvil.{mc_cfg['version']}",
+                            "lower_build_limit": min_y,
+                            "upper_build_limit": max_y,
+                            "scale_percent": 100
+                        },
+                        "height_mapping": {
+                            "from_levels": [0, 65535],
+                            "to_levels": [int(min_elev), int(max_elev)]
+                        }
+                    },
+                    "files": {
+                        "heightmap": Path(output_file.replace('_metadata.json', '_heightmap.png')).name,
+                        "water_mask": "masks/" + self.config['project']['name'] + "_water_mask.png",
+                        "slope_mask": "masks/" + self.config['project']['name'] + "_slope_mask.png"
                     }
-                },
-                "terrain": {
-                    "elevation": {
-                        "min_meters": min_elev,
-                        "max_meters": max_elev,
-                        "mean_meters": float(elevation.mean()),
-                        "range_meters": max_elev - min_elev
-                    },
-                    "heightmap": {
-                        "width_pixels": width,
-                        "height_pixels": height,
-                        "bit_depth": 16
-                    },
-                    "sea_level_meters": 0
-                },
-                "minecraft": {
-                    "scale": {
-                        "factor": scale_down,
-                        "description": f"1:{scale_down} (1 block = {scale_down} meter(s))"
-                    },
-                    "dimensions_blocks": {
-                        "width": mc_width,
-                        "height": mc_height
-                    },
-                    "height_mapping": {
-                        "min_minecraft_y": min_y,
-                        "max_minecraft_y": max_y,
-                        "sea_level_y": sea_level_y,
-                        "description": "Maps real elevation to Minecraft Y coordinates"
-                    }
-                },
-                "worldpainter": {
-                    "suggested_settings": {
-                        "default_water_level": water_level_y,
-                        "map_format": f"org.pepsoft.anvil.{mc_cfg['version']}",
-                        "lower_build_limit": min_y,
-                        "upper_build_limit": max_y,
-                        "scale_percent": scale_percent
-                    },
-                    "height_mapping": {
-                        "from_levels": [0, 65535],
-                        "to_levels": [int(min_elev), int(max_elev)]
-                    }
-                },
-                "files": {
-                    "heightmap": os.path.basename(output_file.replace('_metadata.json', '_heightmap.png')),
-                    "water_mask": "masks/" + self.config['project']['name'] + "_water_mask.png",
-                    "slope_mask": "masks/" + self.config['project']['name'] + "_slope_mask.png"
-                }
-            }
-            
-            os.makedirs(os.path.dirname(output_file), exist_ok=True)
-            with open(output_file, 'w') as f:
-                json.dump(metadata, f, indent=2)
+                }, f, indent=2)
 
             log.info(f"  Metadata saved: {output_file}")
             log.info(f"Metadata Summary:")
@@ -156,7 +157,8 @@ class MetadataGenerator:
             'lat_max': self.config['geospatial']['bounds'][3]
         }
         scale_down = self.config['minecraft']['scale']['horizontal']
+        is_pre_scaled = env.get('PRE_SCALED', False)
         
-        self.generate_metadata(str(source[0]), str(target[0]), bounds, scale_down)
+        self.generate_metadata(str(source[0]), str(target[0]), bounds, scale_down, is_pre_scaled=is_pre_scaled)
         return None
 

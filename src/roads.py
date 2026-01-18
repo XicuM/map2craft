@@ -1,13 +1,11 @@
-"""
+'''
 Road processing for map2craft.
 Generates road masks and flattens roads in elevation data.
-"""
+'''
 
-import os
-import logging
+import logging, json
 import numpy as np
 import rasterio
-import json
 from rasterio.features import rasterize
 from rasterio.transform import from_bounds
 from typing import Tuple, Dict
@@ -84,24 +82,20 @@ class RoadsProcessor:
                 log.warning(f"Failed to process road feature: {e}")
                 pass
             
-        if shapes:
-            # Rasterize
-            try:
-                road_mask = rasterize(
-                    shapes,
-                    out_shape=(height, width),
-                    transform=transform,
-                    fill=0,
-                    dtype=np.uint8,
-                    all_touched=True,
-                    merge_alg=rasterio.enums.MergeAlg.replace 
-                )
+        if shapes: # Rasterize
+            try: road_mask = rasterize(
+                shapes,
+                out_shape=(height, width),
+                transform=transform,
+                fill=0,
+                dtype=np.uint8,
+                all_touched=True,
+                merge_alg=rasterio.enums.MergeAlg.replace 
+            )
             except Exception as e:
                 log.warning(f"Failed to rasterize roads: {e}")
         
         # Save road mask
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        
         with rasterio.open(
             output_file,
             'w',
@@ -113,25 +107,15 @@ class RoadsProcessor:
             crs=crs,
             transform=transform,
             compress='lzw'
-        ) as dst:
-            dst.write(road_mask, 1)
+        ) as dst: dst.write(road_mask, 1)
         
         log.info(f"[✓] Road mask saved: {output_file}")
         log.info(f"  Roads rasterized: {len(shapes)}")
 
     def road_mask_action(self, target, source, env):
-        ''' SCons action for road mask.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        road_widths = self.config['roads']['road_widths']
-        scale_down = self.config['minecraft']['scale']['horizontal']
-        
         self.generate_road_mask(
             str(source[0]), str(source[1]), str(target[0]),
-            road_widths, scale_down
+            self.config['roads']['road_widths'], 
+            self.config['minecraft']['scale']['horizontal']
         )
-        return None
-
+        return 0

@@ -2,7 +2,7 @@ import requests
 import numpy as np
 import rasterio
 from rasterio.merge import merge
-import os
+from pathlib import Path
 import logging
 
 log = logging.getLogger(__name__)
@@ -28,11 +28,11 @@ class ElevationLoader:
         lon_code = f"E{abs(tile_lon):03d}" if tile_lon >= 0 else f"W{abs(tile_lon):03d}"
         
         tile_name = f"Copernicus_DSM_COG_10_{lat_code}_00_{lon_code}_00_DEM"
-        output_file = os.path.join(output_dir, f"{tile_name}.tif")
+        output_file = Path(output_dir) / f"{tile_name}.tif"
         
-        if os.path.exists(output_file):
+        if output_file.exists():
             log.info(f"  Tile {lat_code}{lon_code} already exists")
-            return output_file
+            return str(output_file)
             
         url = f"https://copernicus-dem-30m.s3.amazonaws.com/{tile_name}/{tile_name}.tif"
         log.info(f"  Downloading tile {lat_code}{lon_code} from AWS...")
@@ -41,20 +41,18 @@ class ElevationLoader:
             resp = requests.get(url, timeout=120, stream=True)
             resp.raise_for_status()
             with open(output_file, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                for chunk in resp.iter_content(chunk_size=8192): f.write(chunk)
             return output_file
         except Exception as e:
             log.error(f"  Error downloading {tile_name}: {e}")
             return None
 
-    def download_elevation(self, bounds, output_path, resolution_meters=30):
+    def download_elevation(self, bounds, output_path):
         ''' Downloads Copernicus DEM tiles covering the bounds and merges them.
             (AWS Open Data, free, no auth)
 
             :param tuple bounds: (lon_min, lat_min, lon_max, lat_max)
             :param str output_path: Path to save the merged GeoTIFF
-            :param int resolution_meters: Target resolution in meters (default 30)
         '''
         lon_min, lat_min, lon_max, lat_max = bounds
         
@@ -69,18 +67,17 @@ class ElevationLoader:
                 
         log.info(f"Need {len(tiles_needed)} tiles.")
         
-        temp_dir = os.path.join(os.path.dirname(output_path), "tiles_temp")
-        os.makedirs(temp_dir, exist_ok=True)
+        temp_dir = Path(output_path).parent / "tiles_temp"
         
         # 2. Download tiles
         tile_files = []
         for lat, lon in tiles_needed:
             tf = self.download_copernicus_tile(lat, lon, temp_dir)
-            if tf:
-                tile_files.append(tf)
+            if tf: tile_files.append(tf)
                 
-        if not tile_files:
-            raise RuntimeError("No tiles downloaded. Check internet connection or bounds.")
+        if not tile_files: raise RuntimeError(
+            "No tiles downloaded. Check internet connection or bounds."
+        )
             
         # 3. Merge tiles
         log.info(f"Merging {len(tile_files)} tiles...")
@@ -110,8 +107,7 @@ class ElevationLoader:
             log.info(f"Saved merged elevation to {output_path}")
             
         finally:
-            for src in src_files_to_close:
-                src.close()
+            for src in src_files_to_close: src.close()
 
     def download_action(self, target, source, env):
         ''' SCons action to download elevation.
@@ -122,5 +118,5 @@ class ElevationLoader:
         '''
         bounds_list = self.config['geospatial']['bounds']
         bounds_tuple = tuple(bounds_list)
-        self.download_elevation(bounds_tuple, str(target[0]), resolution_meters=30)
+        self.download_elevation(bounds_tuple, str(target[0]))
         return None

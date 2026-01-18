@@ -1,6 +1,7 @@
-import os
 import subprocess
 from pathlib import Path
+import yaml
+import json
 import logging
 import numpy as np
 from PIL import Image
@@ -19,7 +20,7 @@ class WorldPainterInterface:
 
     def split_biomes(self, biome_map_path, output_dir):
         """Splits a multi-value biome map into separate binary masks for each biome."""
-        if not biome_map_path or not os.path.exists(biome_map_path):
+        if not biome_map_path or not Path(biome_map_path).exists():
             return {}
         
         try:
@@ -31,32 +32,25 @@ class WorldPainterInterface:
             biomes_found = {}
             unique_biomes = np.unique(data)
             
+            output_dir_path = Path(output_dir)
+            if not output_dir_path.exists():
+                output_dir_path.mkdir(parents=True, exist_ok=True)
+            
             for bid in unique_biomes:
-                # Simply use the ID as the key
-                valid_bid = int(bid)
-                
                 mask = (data == bid).astype(np.uint8) * 255
                 mask_img = Image.fromarray(mask, mode='L')
-                
-                filename = f"biome_{valid_bid}.png"
-                out_path = Path(output_dir) / filename
+                out_path = output_dir_path/f"biome_{int(bid)}.png"
                 mask_img.save(out_path)
-                biomes_found[valid_bid] = str(out_path)
+                biomes_found[int(bid)] = str(out_path)
                 
             return biomes_found
         except Exception as e:
             log.error(f"Failed to split biomes: {e}")
             return {}
 
-    def _get_wp_biome_name(self, bid):
-        """Maps internal biome ID to WorldPainter Biome constant name."""
-        # Deprecated / Unused now
-        return str(bid)
-
     def generate_script(self, heightmap_path, output_world_path, metadata_dict, **kwargs):
         """Generates the WorldPainter Javascript to build the world."""
         mp = self.config['minecraft']
-        scale = mp['scale']['scale_percent']
         sea_level = mp['sea_level']
         
         # Build Limits from config
@@ -96,10 +90,8 @@ class WorldPainterInterface:
         # 2. Calculate Block Heights (Absolute Y)
         # Y = SeaLevel + (Meters * Scale)
         # We use the configured sea_level as the anchor point.
-        # User requested 1 block downward shift (Coastline was 64, should be 63)
-        y_shift = -1
-        abs_min_y = sea_level + (hm_min_m * v_scale) + y_shift
-        abs_max_y = sea_level + (hm_max_m * v_scale) + y_shift
+        abs_min_y = sea_level + (hm_min_m * v_scale)
+        abs_max_y = sea_level + (hm_max_m * v_scale)
         
         # 3. Y-Offset for Scripting
         # WorldPainter's 'toLevels' usually takes absolute levels for modern formats (1.18+),
@@ -129,15 +121,16 @@ class WorldPainterInterface:
             
             "var world = wp.createWorld()",
             "    .fromHeightMap(heightMap)",
-            f"    .scale({int(scale)})",
             "    .withMapFormat(mapFormat)",
             f"    .withLowerBuildLimit({int(default_min_build)})",
             f"    .withUpperBuildLimit({int(default_max_build)})",
-            f"    .fromLevels(0, 65535)",
+            "    .fromLevels(0, 65535)",
             f"    .toLevels({target_min_y}, {target_max_y})",
             # withWaterLevel expects absolute Minecraft Y coordinate, not relative level
             f"    .withWaterLevel({int(sea_level)})",
             "    .go();",
+            f"world.setName('{self.config['project']['name']}');",
+            f"world.setGameType(org.pepsoft.worldpainter.GameType.{self.config['project'].get('game_mode', 'creative').upper()});",
             "print('World created successfully');",
             
             # Base terrain
@@ -146,7 +139,7 @@ class WorldPainterInterface:
         ]
 
         # 1. Apply Terrain Types using Masks
-        for mask_name, terrain_id in [('water_mask', 5), ('slope_mask', 2), ('road_mask', 12)]:
+        for mask_name, terrain_id in [('water_mask', 5), ('slope_mask', 2), ('road_mask', 100)]:
             mask_path = kwargs.get(mask_name)
             if mask_path:
                 lines.append(f"print('Applying {mask_name}...');")
@@ -186,92 +179,20 @@ class WorldPainterInterface:
 
     def run_worldpainter(self, script_path):
         """Executes the WorldPainter JS script via wpscript executable."""
-        wp_dir = self.config['worldpainter']['path']
-        exe = Path(wp_dir)/'wpscript.exe' if os.name == 'nt' else Path('wpscript')
+        import os
+        cmd = ['wpscript', script_path]
         
-        # Fallback to system PATH if config path is invalid
-        cmd = [str(exe) if exe.exists() else 'wpscript', script_path]
-        
+        # Set JAVA Options for memory if not already set
+        env = os.environ.copy()
+        if '_JAVA_OPTIONS' not in env:
+            env['_JAVA_OPTIONS'] = '-Xmx4G'
+            
         log.info(f"Running WorldPainter: {cmd[0]}")
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            if result.stdout: log.info(f"WorldPainter output: {result.stdout}")
+            # Stream output to console instead of capturing
+            subprocess.run(cmd, check=True, env=env)
         except subprocess.CalledProcessError as e:
             log.error(f"WorldPainter execution failed: {e}")
-            if e.stdout: log.error(f"stdout: {e.stdout}")
-            if e.stderr: log.error(f"stderr: {e.stderr}")
             raise
 
-    def world_action(self, target, source, env):
-        """SCons action for world generation."""
-        import json
-        
-        heightmap = str(source[0])
-        meta_json_path = str(source[1])
-        
-        # Load Metadata
-        metadata_dict = {}
-        if os.path.exists(meta_json_path):
-            with open(meta_json_path, 'r', encoding='utf-8') as f:
-                metadata_dict = json.load(f)
-        
-        # Merge dynamic heightmap metadata (sidecar)
-        hm_json = heightmap + ".json"
-        if os.path.exists(hm_json):
-            log.info(f"Loading heightmap metadata from {hm_json}")
-            with open(hm_json, 'r', encoding='utf-8') as f:
-                hm_meta = json.load(f)
-                metadata_dict.update(hm_meta) # Override defaults with actuals
-        
-        def get_src(i): return str(source[i]) if len(source) > i and str(source[i]) != 'None' else None
-        
-        water_mask = get_src(2)
-        slope_mask = get_src(3)
-        road_mask = get_src(4)
-        biome_map = get_src(5)
-        buildings_json = get_src(6)
 
-        # Load buildings if provided
-        buildings_data = {}
-        if buildings_json and os.path.exists(buildings_json):
-            with open(buildings_json, 'r', encoding='utf-8') as f:
-                buildings_data = json.load(f)
-
-        # Split biomes
-        biomes_dict = {}
-        if biome_map:
-            log.info(f"Splitting biomes from {biome_map}...")
-            out_dir = Path(str(target[0])).parent / "biome_masks"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            biomes_dict = self.split_biomes(biome_map, out_dir)
-
-        script_content = self.generate_script(
-            heightmap, target[0],
-            metadata_dict=metadata_dict,
-            water_mask=water_mask,
-            slope_mask=slope_mask,
-            road_mask=road_mask,
-            biomes=biomes_dict,
-            buildings=buildings_data
-        )
-        
-        script_file = str(target[1])
-        Path(script_file).write_text(script_content)
-        self.run_worldpainter(script_file)
-
-    def export_action(self, target, source, env):
-        """SCons action to export .world file to Minecraft save directory."""
-        world_path = self._to_wp_path(source[0])
-        out_dir = self._to_wp_path(Path(str(target[0])).parent)
-        script_path = Path(str(target[0])).parent / "export_script.js"
-
-        script = (
-            f"var world = wp.getWorld().fromFile('{world_path}').go();\n"
-            f"wp.exportWorld(world).toDirectory('{out_dir}').go();\n"
-            "print('Export complete!');"
-        )
-        
-        script_path.write_text(script)
-        self.run_worldpainter(str(script_path))
-
-    

@@ -34,7 +34,6 @@ class WaterwaysProcessor:
         
         # Save mask as PNG
         out_path = Path(output_file)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(mask, mode='L').save(out_path)
         
         log.info(f"[✓] River mask saved: {out_path} ({len(shapes)} features)")

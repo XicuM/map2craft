@@ -1,19 +1,13 @@
-
 import logging
-import os
-from pathlib import Path
-from typing import Tuple, Optional, Dict
-
 import numpy as np
 import rasterio
+from pathlib import Path
+from typing import Tuple, Optional, Dict
 from rasterio.warp import reproject, Resampling
 
 log = logging.getLogger(__name__)
 
-BIOME_IDS = {
-    'ocean': 0, 'plains': 1, 'forest': 4, 'swamp': 6, 'beach': 16, 
-    'deep_ocean': 24, 'stone_shore': 25, 'savanna': 35, 'badlands': 37, 'lukewarm_ocean': 45
-}
+from src.constants import BIOME_IDS
 
 class BiomeMapper:
     def __init__(self, config=None):
@@ -25,7 +19,6 @@ class BiomeMapper:
             :param transform: Rasterio transform
             :param crs: Coordinate reference system
             :param np.ndarray elevation: Elevation data
-            
             :return: Slope in degrees (same shape as elevation)
         '''
         res_x, res_y = abs(transform.a), abs(transform.e)
@@ -60,9 +53,15 @@ class BiomeMapper:
             )
         return out
 
-    def generate_biome_map_array(self, elevation: np.ndarray, slope: np.ndarray, land_cover: Optional[np.ndarray], 
-                        sea_level: float = 0.0, cliff_threshold: float = 25.0,
-                        lukewarm_depth: float = -35.0, deep_depth: float = -90.0) -> np.ndarray:
+    def generate_biome_map_array(self, 
+        elevation: np.ndarray, 
+        slope: np.ndarray, 
+        land_cover: Optional[np.ndarray], 
+        sea_level: float = 0.0, 
+        cliff_threshold: float = 25.0,
+        lukewarm_depth: float = -35.0, 
+        deep_depth: float = -90.0
+    ) -> np.ndarray:
         ''' Classifies terrain into biomes based on height, slope, and land cover.
         
             :param np.ndarray elevation: Elevation data
@@ -98,7 +97,7 @@ class BiomeMapper:
         return np.select(conds, choices, default=BIOME_IDS['plains']).astype(np.uint8)
 
     def create_biome_map(self, elevation_file: str, land_cover_file: Optional[str], 
-                        output_file: str) -> None:
+                        output_file: str, is_pre_scaled: bool = False) -> None:
         ''' Orchestrates the loading, classification, and saving of the biome map.
         
             :param str elevation_file: Path to elevation GeoTIFF
@@ -108,10 +107,21 @@ class BiomeMapper:
         log.info("Generating biome map...")
         
         with rasterio.open(elevation_file) as src:
-            elev, trans, crs, profile = src.read(1), src.transform, src.crs, src.profile
-            slope = self.compute_slope_and_pixel_size(trans, crs, elev)
+            elev, trans, crs, profile = src.read(1).astype(np.float32), src.transform, src.crs, src.profile
+            
+            # If elevation is in blocks (pre-scaled), convert back to meters 
+            # for slope calculation and biome thresholds which are configured in meters
+            if is_pre_scaled:
+                v_scale = float(self.config['minecraft']['scale']['vertical'])
+                log.info(f" Converting pre-scaled elevation (blocks) to meters for biome logic (scale: {v_scale})")
+                elev_m = elev * v_scale
+            else:
+                elev_m = elev
+
+            slope = self.compute_slope_and_pixel_size(trans, crs, elev_m)
             
             lc = self.load_and_resample_land_cover(land_cover_file, elev.shape, trans, crs) if land_cover_file else None
+             
             
             # Get biome configuration
             biome_cfg = self.config['biomes']
@@ -120,27 +130,27 @@ class BiomeMapper:
             lukewarm_depth = biome_cfg['lukewarm_ocean_depth_m']
             deep_depth = biome_cfg['deep_ocean_depth_m']
             
+            # Clamp shallow areas near sea level to ensure proper water biome classification
+            # Target: 0-1 block elevation areas that should be water (artifacts from bathymetry merge)
+            shallow_land = (elev_m > 0) & (elev_m < 1.0)
+            if np.any(shallow_land):
+                elev_m[shallow_land] = -1.0  # Force to water
+                log.info(f" Clamped {np.sum(shallow_land)} shallow coastal pixels to -1 block for biome classification")
+            
+            # Also clamp any negative shallow water
+            shallow_water = (elev_m < 0) & (elev_m > -1.0)
+            if np.any(shallow_water):
+                elev_m[shallow_water] = -1.0
+                log.info(f" Clamped {np.sum(shallow_water)} shallow water pixels to -1 block for biome classification")
+            
             # Generate biome map
-            biome_map = self.generate_biome_map_array(elev, slope, lc, sea_level, cliff_threshold, lukewarm_depth, deep_depth)
+            biome_map = self.generate_biome_map_array(elev_m, slope, lc, sea_level, cliff_threshold, lukewarm_depth, deep_depth)
             
             # Save biome map
-            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
             profile.update(dtype=rasterio.uint8, count=1, compress='lzw')
-            
             with rasterio.open(output_file, 'w', **profile) as dst:
                 dst.write(biome_map, 1)
         
         log.info(f"[✓] Biome map saved: {output_file}")
 
-    def biome_map_action(self, target, source, env):
-        ''' SCons action for biome map.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        elev_file = str(source[0])
-        lc_file = str(source[1]) if len(source) > 1 and os.path.exists(str(source[1])) else None
-        self.create_biome_map(elev_file, lc_file, str(target[0]))
-        return None
 

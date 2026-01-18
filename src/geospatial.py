@@ -1,10 +1,8 @@
-
+from pathlib import Path
 import rasterio
 import numpy as np
 from rasterio.warp import calculate_default_transform, reproject, Resampling, transform_bounds
 from rasterio.transform import from_bounds
-import os
-
 import logging
 
 log = logging.getLogger(__name__)
@@ -13,7 +11,7 @@ class TerrainProcessor:
     def __init__(self, config={}):
         self.config = config
         
-    def process_terrain(self, input_path, output_path, target_crs="EPSG:3857", resolution=5, bounds=None):
+    def process_terrain(self, input_path, output_path, target_crs="EPSG:3857", resolution=5, bounds=None, preserve_coastline=True):
         ''' Reprojects, crops to bounds, and normalizes elevation data.
         
             :param str input_path: Input elevation file
@@ -49,8 +47,6 @@ class TerrainProcessor:
                 'nodata': None
             })
 
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
             with rasterio.open(output_path, 'w', **kwargs) as dst:
                 # 1. Resample Elevation using Cubic for smooth terrain
                 # We do this into a memory array first so we can read and modify it
@@ -66,46 +62,107 @@ class TerrainProcessor:
                     resampling=Resampling.cubic
                 )
                 
+                dst.write(elev_dst, 1)
+
                 # 2. Coastline Preservation: 
-                # Resample a binary "Land Mask" using Nearest neighbor to keep it sharp
-                # Create a binary mask of the source land (elev >= 0)
-                src_data = src.read(1)
-                land_mask_src = (src_data >= 0).astype(np.float32)
+                # If enabled, enforces a sharp transition between land and water based on the original land mask.
+                # This prevents "muddy" coasts when upscaling but creates artifacts if we have real bathymetry.
+                if preserve_coastline:
+                    # Resample a binary "Land Mask" using Nearest neighbor to keep it sharp
+                    # Create a binary mask of the source land (elev >= 0)
+                    src_data = src.read(1)
+                    land_mask_src = (src_data >= 0).astype(np.float32)
+                    
+                    land_mask_dst = np.zeros_like(elev_dst, dtype=np.float32)
+                    reproject(
+                        source=land_mask_src,
+                        destination=land_mask_dst,
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=target_crs,
+                        resampling=Resampling.nearest  # Sharp!
+                    )
+                    
+                    # Fix Coastline: Ensure land pixels have elevation >= 0 and water pixels < 0
+                    # Using 0.01/-0.01 as small buffers to avoid ambiguity
+                    land_indices = land_mask_dst >= 0.5
+                    water_indices = land_mask_dst < 0.5
+                    
+                    # Force Land to be >= 0.01m if Cubic made it < 0
+                    land_correction = (land_indices) & (elev_dst < 0)
+                    elev_dst[land_correction] = 0.01
+                    
+                    # Force Water to be < 0m if Cubic made it >= 0
+                    water_correction = (water_indices) & (elev_dst >= 0)
+                    elev_dst[water_correction] = -0.01
+                else:
+                    # Bathymetry mode: Don't force hard coastlines, but DO fix cubic interpolation artifacts
+                    # Cubic creates "ringing" near cliffs: positive bumps at base, then undershoots
+                    # This appears as a 1-block land line separated from coast by 2 blocks
+                    
+                    # Read source to identify water areas (use 0 threshold to catch all water)
+                    src_data = src.read(1)
+                    water_src = (src_data < 0).astype(np.float32)  # Any water in source
+                    
+                    water_dst = np.zeros_like(elev_dst, dtype=np.float32)
+                    reproject(
+                        source=water_src,
+                        destination=water_dst,
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=target_crs,
+                        resampling=Resampling.nearest
+                    )
+                    
+                    # Fix cubic ringing: areas that should be water but became positive
+                    # Use a low threshold to catch pixels that are even partially water
+                    ringing_artifacts = (water_dst > 0.1) & (elev_dst > 0) & (elev_dst < 2.0)  # Only fix small positive bumps
+                    if np.any(ringing_artifacts):
+                        # Force these to slightly negative to mark as water
+                        elev_dst[ringing_artifacts] = -0.1
+                        log.info(f"Fixed {np.sum(ringing_artifacts)} cubic ringing artifacts at cliffs")
                 
-                land_mask_dst = np.zeros_like(elev_dst, dtype=np.float32)
-                reproject(
-                    source=land_mask_src,
-                    destination=land_mask_dst,
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=target_crs,
-                    resampling=Resampling.nearest  # Sharp!
-                )
-                
-                # Fix Coastline: Ensure land pixels have elevation >= 0 and water pixels < 0
-                # Using 0.01/-0.01 as small buffers to avoid ambiguity
-                land_indices = land_mask_dst >= 0.5
-                water_indices = land_mask_dst < 0.5
-                
-                # Force Land to be >= 0.01m if Cubic made it < 0
-                land_correction = (land_indices) & (elev_dst < 0)
-                elev_dst[land_correction] = 0.01
-                
-                # Force Water to be < 0m if Cubic made it >= 0
-                water_correction = (water_indices) & (elev_dst >= 0)
-                elev_dst[water_correction] = -0.01
-                
+                # Write final result
                 dst.write(elev_dst, 1)
         log.info(f"Terrain processed.")
 
-    def generate_heightmap_image(self, input_path, output_path, land_reference_path=None):
+    def scale_raster_values(self, input_path, output_path, scale_factor):
+        ''' Scales the values of a raster file by the given factor.
+            Used to convert meters to blocks before merging.
+            
+            :param str input_path: Input raster path
+            :param str output_path: Output raster path
+            :param float scale_factor: Factor to multiply values by
+        '''
+        log.info(f"Scaling raster: {input_path} by {scale_factor:.4f}")
+        with rasterio.open(input_path) as src:
+            data = src.read(1)
+            
+            # Scale values
+            scaled_data = data * scale_factor
+            
+            # Preserve nodata
+            if src.nodata is not None:
+                mask = (data == src.nodata)
+                scaled_data[mask] = src.nodata
+            
+            meta = src.meta.copy()
+            meta.update(dtype=rasterio.float32)
+            
+            with rasterio.open(output_path, 'w', **meta) as dst:
+                dst.write(scaled_data.astype(np.float32), 1)
+
+    def generate_heightmap_image(self, input_path, output_path, land_reference_path=None, is_pre_scaled=False, water_threshold_m=0.0):
         ''' Converts processed elevation (meters) to 16-bit PNG for WorldPainter.
             Uses "Smart Scaling" to fit Land Peak to Build Limit and Sea Level to 62.
             
             :param str input_path: Pass processed/merged elevation GeoTIFF
-            :param str output_path: Path to output PNG
+            :param str output_file: Path to output PNG
             :param str land_reference_path: Path to Land-Only elevation GeoTIFF (for defining scale)
+            :param bool is_pre_scaled: If True, input data is already in BLOCKS (vertical scale 1.0)
+            :param float water_threshold_m: Elevation threshold (meters) below which terrain is forced to Y=61
         '''
         log.info(f"Generating heightmap image: {output_path}")
         
@@ -123,8 +180,7 @@ class TerrainProcessor:
         min_elev_limit = -10000 # Safety floor
         
         # Determine Scaling Parameters
-        land_max = 255.0 # Default fallback
-        if land_reference_path and os.path.exists(land_reference_path):
+        if land_reference_path and Path(land_reference_path).exists():
             try:
                 with rasterio.open(land_reference_path) as ref:
                     # Read finding max value, handling nodata
@@ -137,8 +193,48 @@ class TerrainProcessor:
                         land_max = float(np.max(ref_data))
                         # Avoid strictly 0 max if flat
                         if land_max < 10: land_max = 64
+                    else:
+                        raise ValueError("Land reference file is empty")
             except Exception as e:
-                log.warning(f"Failed to read land reference {land_reference_path}: {e}")
+                log.error(f"Failed to read land reference {land_reference_path}: {e}")
+                raise
+        else:
+             # User stated heightmap is always present, so if we are here for auto-fit, we should probably fail if we needed it?
+             # However, the original code used 255.0 as default.
+             # If we are in auto_fit mode, we NEED land_max.
+             if mp['scale']['auto_fit']:
+                 raise FileNotFoundError(f"Land reference file required for auto-fit but not found: {land_reference_path}")
+             else:
+                 # If not auto-fit, land_max might not be strictly used for scaling calculation if we use natural scale, 
+                 # but let's stick to the user's request: "If something is not working, then, I must know."
+                 # So if land_reference_path WAS expected but missing, we error.
+                 # But wait, land_reference_path is optional in the signature? 
+                 # run_scons passes it. 
+                 # Let's set land_max to None and ensure we blow up if it's used.
+                 land_max = 255.0 # We have to have a value to avoid UnboundLocalError later?
+                 # No, let's look at usage.
+                 pass
+
+        # Simplified Approach based on user request:
+        # "The heightmap is the most important file in the project, so it is always present."
+        # This implies we should trust it exists and read it.
+        
+        if not land_reference_path or not Path(land_reference_path).exists():
+             raise FileNotFoundError(f"Land reference file not found: {land_reference_path}")
+
+        try:
+            with rasterio.open(land_reference_path) as ref:
+                ref_data = ref.read(1)
+                if ref.nodata is not None:
+                        ref_data = ref_data[ref_data != ref.nodata]
+                
+                if ref_data.size > 0:
+                    land_max = float(np.max(ref_data))
+                    if land_max < 10: land_max = 64
+                else:
+                    raise ValueError("Land reference file contains no valid data")
+        except Exception as e:
+             raise RuntimeError(f"Critical failure reading land reference: {e}")
         
         if mp['scale']['auto_fit']:
             # AUTO-FIT MODE: Scale to fill build limits
@@ -159,22 +255,53 @@ class TerrainProcessor:
             calc_min_elev = (min_build - sea_level_y) / scale_factor
             
             log.info(f"Auto-fit scaling: Land Peak {land_max}m -> Y={max_build}. Sea Level 0m -> Y={sea_level_y}.")
+            log.info(f"Auto-fit scaling: Land Peak {land_max}m -> Y={max_build}. Sea Level 0m -> Y={sea_level_y}.")
         else:
             # NATURAL SCALE MODE: Use configured vertical scale
-            # Scale factor is 1 block per N meters
-            scale_factor = 1.0 / vertical_scale  # blocks per meter
+            if is_pre_scaled:
+                # Data is already scaled to blocks (meters * scale_factor was done earlier)
+                # So here we treat 1 unit of elevation as 1 block
+                scale_factor = 1.0 
+                log.info(f"Pre-scaled mode: Data is already in blocks. Sea Level 0 -> Y={sea_level_y}.")
+            else:
+                # Scale factor is 1 block per N meters
+                scale_factor = 1.0 / vertical_scale  # blocks per meter
+                log.info(f"Natural scaling: {vertical_scale}m per block. Sea Level 0m -> Y={sea_level_y}.")
             
             # Calculate elevation range based on natural scale
             # We still want 0m at sea_level_y, but heights are determined by natural scale
             calc_max_elev = (max_build - sea_level_y) / scale_factor
             calc_min_elev = (min_build - sea_level_y) / scale_factor
-            
-            log.info(f"Natural scaling: {vertical_scale}m per block. Sea Level 0m -> Y={sea_level_y}.")
+             
         
         log.info(f"Clipping Range: {calc_min_elev:.2f}m to {calc_max_elev:.2f}m")
         
         with rasterio.open(input_path) as src:
             data = src.read(1)
+            
+            # Ensure water areas (below threshold) are capped at -1 block maximum (Y=61)
+            # This prevents shallow water from appearing as land at sea level (Y=62)
+            # Threshold is in meters, but data might be in blocks (if is_pre_scaled)
+            water_threshold = water_threshold_m
+            if is_pre_scaled:
+                # If pre-scaled, elevation data is in blocks, so we multiply threshold by 1/vertical_scale
+                # Actually, 1.0m threshold should become (1.0 / vertical_scale) blocks.
+                water_threshold = water_threshold_m / vertical_scale
+            
+            water_mask = data < water_threshold
+            if np.any(water_mask):
+                # We force it to be at least -1.0 blocks below the sea_level_y anchor
+                # This ensures the heightmap value for these pixels is < the value for 0m
+                data[water_mask] = np.minimum(data[water_mask], -1.0 / (1.0 if not is_pre_scaled else 1.0)) # Force at least 1 block deep
+                # Wait, if data is meters, force to -1.0 * vertical_scale meters? No.
+                # data is in current units. 
+                # If is_pre_scaled=False (meters): we want it to be -1.0 * vertical_scale meters to result in -1 block.
+                # If is_pre_scaled=True (blocks): we want it to be -1.0 blocks.
+                
+                target_min_depth_in_units = -1.0 if is_pre_scaled else -1.0 * vertical_scale
+                data[water_mask] = np.minimum(data[water_mask], target_min_depth_in_units)
+                
+                log.info(f"Clamped {np.sum(water_mask)} water pixels (below {water_threshold:.3f}) to at least 1 block deep (Y=61)")
             
             # Clip to bounds
             data = np.clip(data, calc_min_elev, calc_max_elev)
@@ -207,27 +334,5 @@ class TerrainProcessor:
             
         log.info("Heightmap generated.")
 
-    def process_action(self, target, source, env):
-        ''' SCons action to process terrain.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        res = self.config['geospatial']['resolution']
-        bounds_list = self.config['geospatial']['bounds']
-        bounds_tuple = tuple(bounds_list)
-        
-        self.process_terrain(str(source[0]), str(target[0]), resolution=res, bounds=bounds_tuple)
-        return None
 
-    def heightmap_action(self, target, source, env):
-
-        ''' SCons action to generate heightmap.
-            Source[0]: Merged/Processed Elevation
-            Source[1]: (Optional) Land Raw Elevation for Reference
-        '''
-        ref_path = str(source[1]) if len(source) > 1 else None
-        self.generate_heightmap_image(str(source[0]), str(target[0]), land_reference_path=ref_path)
-        return None
 

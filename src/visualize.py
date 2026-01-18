@@ -1,83 +1,22 @@
-"""
-Visualization tools for map2craft.
-Generate preview images for terrain, biomes, and land cover.
-"""
-
-import os
 import logging
 import json
+import yaml
 import numpy as np
 import rasterio
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 from typing import Dict, Tuple, Optional
+from src.constants import (
+    BIOME_COLORS, BIOME_NAMES, LAND_COVER_COLORS, LAND_COVER_NAMES,
+    TERRAIN_COLORS_HEX, TERRAIN_NAMES_LIST, BUILDING_TYPE_STYLES
+)
 
 log = logging.getLogger(__name__)
 
-# Minecraft biome colors (approximate)
-BIOME_COLORS = {
-    0: (0, 0, 112),      # Ocean - dark blue
-    1: (141, 179, 96),   # Plains - light green
-    4: (5, 102, 33),     # Forest - dark green
-    5: (11, 102, 89),    # Taiga - teal
-    6: (7, 249, 178),    # Swamp - cyan-green
-    7: (0, 0, 255),      # River - blue
-    16: (250, 222, 85),  # Beach - sand yellow
-    24: (0, 0, 80),      # Deep Ocean - very dark blue
-    25: (162, 162, 132), # Stone Shore - gray
-    35: (189, 178, 95),  # Savanna - tan
-    37: (217, 69, 21),   # Badlands - orange-red
-    45: (0, 119, 190),   # Lukewarm Ocean - lighter blue
-}
-
-# ESA WorldCover colors (official)
-LAND_COVER_COLORS = {
-    10: (0, 100, 0),     # Tree cover - dark green
-    20: (255, 187, 34),  # Shrubland - orange
-    30: (255, 255, 76),  # Grassland - yellow
-    40: (240, 150, 255), # Cropland - pink
-    50: (250, 0, 0),     # Built-up - red
-    60: (180, 180, 180), # Bare/sparse - gray
-    70: (240, 240, 240), # Snow and ice - white
-    80: (0, 100, 200),   # Water - blue
-    90: (0, 150, 160),   # Wetland - teal
-    95: (0, 207, 117),   # Mangroves - bright green
-    100: (250, 230, 160),# Moss and lichen - beige
-    0: (0, 0, 0),        # No data - black
-}
-
-LAND_COVER_NAMES = {
-    10: "Tree cover",
-    20: "Shrubland",
-    30: "Grassland",
-    40: "Cropland",
-    50: "Built-up",
-    60: "Bare/sparse vegetation",
-    70: "Snow and ice",
-    80: "Permanent water bodies",
-    90: "Herbaceous wetland",
-    95: "Mangroves",
-    100: "Moss and lichen",
-    0: "No data",
-}
-
-BIOME_NAMES = {
-    0: "Ocean",
-    1: "Plains",
-    4: "Forest",
-    5: "Taiga",
-    6: "Swamp",
-    7: "River",
-    16: "Beach",
-    24: "Deep Ocean",
-    25: "Stone Shore",
-    35: "Savanna",
-    37: "Badlands",
-    45: "Lukewarm Ocean",
-}
 
 
 class MapVisualizer:
@@ -98,20 +37,24 @@ class MapVisualizer:
         for class_id, color in color_map.items():
             mask = data == class_id
             rgb[mask] = color
-        
         return rgb
 
-
     def _normalize_color(self, color):
-        """Convert 0-255 RGB tuple to 0-1 RGB tuple."""
+        '''Convert 0-255 RGB tuple to 0-1 RGB tuple.'''
         return (color[0]/255, color[1]/255, color[2]/255)
 
+    def _add_legend(self, handles, title):
+        '''Helper to add a legend to the current matplotlib figure.'''
+        if handles: plt.legend(
+            handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
+            title=title, framealpha=0.9
+        )
+
     def _save_plot(self, output_file: str, title: str):
-        """Helper to save the current matplotlib figure."""
+        '''Helper to save the current matplotlib figure.'''
         plt.title(title)
         plt.axis('off')
         plt.tight_layout()
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
         plt.close()
 
@@ -123,8 +66,7 @@ class MapVisualizer:
         '''
         log.info("Generating biome visualization...")
         
-        with rasterio.open(biome_map_file) as src:
-            biome_data = src.read(1)
+        with rasterio.open(biome_map_file) as src: biome_data = src.read(1)
         
         # Colorize biome map
         rgb = self.colorize_array(biome_data, BIOME_COLORS)
@@ -133,23 +75,17 @@ class MapVisualizer:
         plt.figure(figsize=(16, 12), dpi=150)
         plt.imshow(rgb, interpolation='nearest')
         
-        # Legend
-        unique_biomes = np.unique(biome_data)
         handles = []
-        for bid in sorted(unique_biomes):
-            if bid in BIOME_COLORS:
-                color = self._normalize_color(BIOME_COLORS[bid])
-                name = BIOME_NAMES.get(bid, f"Biome {bid}")
-                handles.append(Patch(color=color, label=name))
-        
-        if handles:
-            plt.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
-                      title='Biome Types', framealpha=0.9)
+        for bid in sorted(np.unique(biome_data)):
+            if bid in BIOME_COLORS: handles.append(Patch(
+                color=self._normalize_color(BIOME_COLORS[bid]), 
+                label=BIOME_NAMES.get(bid, f"Biome {bid}")
+            ))
 
+        self._add_legend(handles, 'Biome Types')
         self._save_plot(output_file, f'Biome Map: {self.config["project"]["name"]}')
         
         log.info(f"[✓] Biome visualization saved: {output_file}")
-
 
     def visualize_land_cover(self, land_cover_file: str, output_file: str) -> None:
         ''' Create a visualization of the land cover map using matplotlib.
@@ -177,11 +113,8 @@ class MapVisualizer:
                 color = self._normalize_color(LAND_COVER_COLORS[cid])
                 name = LAND_COVER_NAMES.get(cid, f"Class {cid}")
                 handles.append(Patch(color=color, label=name))
-        
-        if handles:
-            plt.legend(handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
-                      title='Land Cover Classes', framealpha=0.9)
-            
+
+        self._add_legend(handles, 'Land Cover Classes') 
         self._save_plot(output_file, f'Land Cover: {self.config["project"]["name"]}')
         
         log.info(f"[✓] Land cover visualization saved: {output_file}")
@@ -215,7 +148,7 @@ class MapVisualizer:
         rgb = np.stack([elev_normalized] * 3, axis=-1)
         
         # Apply water mask if available
-        if water_mask_file and os.path.exists(water_mask_file):
+        if water_mask_file and Path(water_mask_file).exists():
             water_mask = np.array(Image.open(water_mask_file))
             if water_mask.shape == elevation.shape:
                 water_pixels = water_mask > 128
@@ -247,7 +180,7 @@ class MapVisualizer:
                     rgb[water_pixels] = [0.0, 0.39, 0.78]
         
         # Apply road mask if available
-        if road_mask_file and os.path.exists(road_mask_file):
+        if road_mask_file and Path(road_mask_file).exists():
             try:
                 if road_mask_file.lower().endswith('.tif'):
                     with rasterio.open(road_mask_file) as rsrc:
@@ -264,14 +197,27 @@ class MapVisualizer:
         # Plot
         plt.figure(figsize=(16, 12), dpi=150)
         plt.imshow(rgb, interpolation='nearest') # RGB is floats 0-1
+
+        # Legend
+        handles = [Patch(color=[0.5, 0.5, 0.5], label='Land (Elevation)')]
         
+        if water_mask_file and Path(water_mask_file).exists():
+            handles.append(Patch(color=[0.0, 0.39, 0.78], label='Water (Bathymetry)'))
+            
+        if road_mask_file and Path(road_mask_file).exists():
+            handles.append(Patch(color=[1.0, 0.55, 0.0], label='Roads'))
+
+        self._add_legend(handles, 'Terrain Features')
         self._save_plot(output_file, f'Terrain: {self.config["project"]["name"]}')
         
         log.info(f"[✓] Terrain visualization saved: {output_file}")
 
-    def visualize_building_placements(self, placements_file: str, output_file: str,
-                                      heightmap_file: str = None,
-                                      water_mask_file: str = None) -> None:
+    def visualize_building_placements(self, 
+        placements_file: str,
+        output_file: str,
+        heightmap_file: str = None,
+        water_mask_file: str = None
+    ) -> None:
         ''' Create a visualization of building placements overlaid on terrain.
         
             :param str placements_file: Path to building_placements.json
@@ -284,7 +230,7 @@ class MapVisualizer:
         # Load building placements
         try:
             with open(placements_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+                data = yaml.safe_load(f)
             placements = data.get('placements', [])
             building_count = data.get('count', len(placements))
         except Exception as e:
@@ -296,7 +242,7 @@ class MapVisualizer:
             return
         
         # Create base visualization
-        if heightmap_file and os.path.exists(heightmap_file):
+        if heightmap_file and Path(heightmap_file).exists():
             # Use heightmap as background
             heightmap = np.array(Image.open(heightmap_file), dtype=np.uint16)
             height, width = heightmap.shape
@@ -312,7 +258,7 @@ class MapVisualizer:
             rgb = np.stack([normalized] * 3, axis=-1)
             
             # Apply water mask if available
-            if water_mask_file and os.path.exists(water_mask_file):
+            if water_mask_file and Path(water_mask_file).exists():
                 try:
                     water_mask = np.array(Image.open(water_mask_file))
                     if water_mask.shape == heightmap.shape:
@@ -331,51 +277,25 @@ class MapVisualizer:
         ax.imshow(rgb, interpolation='nearest')
         
         # Define mapping for building types (color, marker)
-        # Markers: o (circle), s (square), ^ (triangle), D (diamond), * (star), P (plus)
-        TYPE_STYLES = {
-            'cathedral': ('purple', 'P'),
-            'church': ('blue', 's'),
-            'lighthouse': ('yellow', 'D'),
-            'windmill': ('orange', '^'),
-            'tower': ('green', 'o'),
-            'well': ('cyan', '*'),
-            'building': ('red', 'o') # Default
-        }
+        # Define mapping for building types (color, marker)
+        TYPE_STYLES = BUILDING_TYPE_STYLES
         DEFAULT_STYLE = ('red', 'o')
 
         # Group coordinates by type
         typed_coords = {} # type -> (x_list, y_list)
         
         for placement in placements:
-            x = placement.get('pixel_x')
-            y = placement.get('pixel_y')
+            x = placement.get('x')
+            y = placement.get('y')
             if x is None or y is None: continue
             
             # Check bounds
             if not (0 <= x < width and 0 <= y < height): continue
                 
-            # Determine type
-            props = placement.get('properties', {})
-            b_type = props.get('building', 'building')
+            # Determine type (simplified)
+            b_type = placement.get('type', 'building')
             
-            # If the primary building tag is generic, look for more specific tags in properties
-            if b_type in ['yes', 'building', 'true']:
-                # Order of priority for landmark identification
-                for tag_key in ['man_made', 'historic', 'amenity', 'tourism']:
-                    val = props.get(tag_key)
-                    if val and val != 'yes':
-                        b_type = val
-                        break
 
-            if b_type not in TYPE_STYLES:
-                # Check if it matches any known types as a fallback
-                found = False
-                for kt in TYPE_STYLES:
-                    if kt in b_type.lower():
-                        b_type = kt
-                        found = True
-                        break
-                if not found: b_type = 'building'
 
             if b_type not in typed_coords: typed_coords[b_type] = ([], [])
             typed_coords[b_type][0].append(x)
@@ -404,31 +324,12 @@ class MapVisualizer:
         
         # Save
         plt.tight_layout()
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
         plt.close()
         
         log.info(f"[✓] Building placement visualization saved: {output_file}")
 
-    def biome_viz_action(self, target, source, env):
-        self.visualize_biomes(str(source[0]), str(target[0]))
-        return None
 
-    def land_cover_viz_action(self, target, source, env):
-        self.visualize_land_cover(str(source[0]), str(target[0]))
-        return None
-
-    def terrain_viz_action(self, target, source, env):
-        elev = str(source[0])
-        water = str(source[1]) if len(source) > 1 else None
-        road = str(source[2]) if len(source) > 2 else None
-        
-        # Filter out script files passed as dependencies
-        if water and water.endswith('.py'): water = None
-        if road and road.endswith('.py'): road = None
-            
-        self.visualize_terrain(elev, str(target[0]), water_mask_file=water, road_mask_file=road)
-        return None
 
     def visualize_terrain_types(
         self,
@@ -453,21 +354,12 @@ class MapVisualizer:
         log.info("Generating terrain type visualization...")
 
         # Terrain definitions
-        TERRAIN_COLORS = [
-            '#afafaf',  # 0: Gravel Ocean Floor
-            '#d4c4a0',  # 1: Sandy Ocean Floor
-            '#88be63',  # 2: Grass
-            '#7a7a7a',  # 3: Stone (Steep Slopes)
-            '#e8d4a0',  # 4: Beach Sand
-            '#c86428',  # 5: Badlands
-            '#8b6a47'   # 6: Dirt Path (Roads)
-        ]
-        TERRAIN_NAMES = ['Gravel Ocean Floor', 'Sandy Ocean Floor', 'Grass', 
-                        'Stone (Steep Slopes)', 'Beach Sand', 'Badlands', 'Dirt Path (Roads)']
+        TERRAIN_COLORS = TERRAIN_COLORS_HEX
+        TERRAIN_NAMES = TERRAIN_NAMES_LIST
 
         # Helper to load mask
         def _load_mask(path: str) -> np.ndarray:
-            if not path or path == 'None' or not os.path.exists(path):
+            if not path or path == 'None' or not Path(path).exists():
                 return None
             try:
                 if path.lower().endswith('.tif'):
@@ -537,8 +429,7 @@ class MapVisualizer:
         ]:
             if mask is not None:
                 # Resize if necessary
-                if mask.shape != terrain.shape:
-                     continue
+                if mask.shape != terrain.shape: continue
                 terrain[mask > thresh] = tid
 
         # Log distribution
@@ -556,58 +447,14 @@ class MapVisualizer:
         
         # Legend
         handles = [Patch(color=TERRAIN_COLORS[i], label=TERRAIN_NAMES[i]) for i in range(len(TERRAIN_COLORS))]
-        ax.legend(handles=handles, loc='lower left', fontsize=10, title='Terrain Types', framealpha=0.9)
-        ax.set_title(f'Terrain Types Analysis: {self.config["project"]["name"]}')
+        self._add_legend(handles, 'Terrain Types')
+        ax.set_title(f'Terrain Types: {self.config["project"]["name"]}')
         ax.axis('off')
 
         plt.tight_layout()
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
         plt.close()
         log.info(f"[✓] Terrain type visualization saved: {output_file}")
 
-
-    def terrain_types_viz_action(self, target, source, env):
-        # source: heightmap, water, biome_map, road, metadata, steep_slopes
-        if len(source) < 6:
-             pass
-             
-        heightmap = str(source[0])
-        water = str(source[1])
-        biome = str(source[2])
-        road_mask = str(source[3])
-        meta = str(source[4])
-        steep = str(source[5]) if len(source) > 5 else None
-        
-        self.visualize_terrain_types(
-            heightmap_file=heightmap,
-            output_file=str(target[0]),
-            metadata_file=meta,
-            water_mask_file=water,
-            biome_map_file=biome,
-            road_mask_file=road_mask,
-            steep_slopes_mask_file=steep
-        )
-        return None
-
-    def building_viz_action(self, target, source, env):
-        ''' SCons action for building placement visualization.
-            source: building_placements.json, heightmap, water_mask
-        '''
-        placements = str(source[0])
-        heightmap = str(source[1]) if len(source) > 1 else None
-        water = str(source[2]) if len(source) > 2 else None
-        
-        # Filter out script files
-        if heightmap and heightmap.endswith('.py'): heightmap = None
-        if water and water.endswith('.py'): water = None
-        
-        self.visualize_building_placements(
-            placements_file=placements,
-            output_file=str(target[0]),
-            heightmap_file=heightmap,
-            water_mask_file=water
-        )
-        return None
 
 

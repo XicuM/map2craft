@@ -3,11 +3,12 @@ Land cover data download and processing for map2craft.
 Downloads ESA WorldCover data via Microsoft Planetary Computer.
 """
 
-import os
 import logging
 import numpy as np
 import rasterio
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 import requests
+from pathlib import Path
 from rasterio.merge import merge
 from rasterio.windows import from_bounds as window_from_bounds
 from typing import Optional, Tuple, List
@@ -33,11 +34,15 @@ class LandCoverProcessor:
     def __init__(self, config=None):
         self.config = config or {}
 
-    def download_land_cover(self, bounds: Tuple[float, float, float, float], output_file: str) -> bool:
+    def download_land_cover(self, bounds: Tuple[float, float, float, float], 
+                           output_file: str, target_crs: str = "EPSG:3857", 
+                           resolution: float = 10.0) -> bool:
         ''' Download the latest available ESA WorldCover via Microsoft Planetary Computer STAC API.
         
             :param tuple bounds: (lon_min, lat_min, lon_max, lat_max)
             :param str output_file: Path to save the land cover GeoTIFF
+            :param str target_crs: Target CRS (default: Web Mercator)
+            :param float resolution: Target resolution in meters per pixel
             
             :return: True if successful, False otherwise
         '''
@@ -76,7 +81,7 @@ class LandCoverProcessor:
                     break
             
             if not items:
-                log.warning(f"  [x] No WorldCover data found in range 2020-{current_year}")
+                log.warning(f"  [✗] No WorldCover data found in range 2020-{current_year}")
                 return False
 
             log.info(f"  [✓] Found {len(items)} tiles for year {final_year}")
@@ -91,39 +96,57 @@ class LandCoverProcessor:
                     sources.append(src)
                     
             if not sources:
-                log.error("  [x] No valid map assets found")
+                log.error("  [✗] No valid map assets found")
                 return False
 
             log.info(f"  Merging {len(sources)} tile(s)...")
             mosaic, mosaic_transform = merge(sources, bounds=(lon_min, lat_min, lon_max, lat_max))
             
-            for src in sources:
-                src.close()
+            for src in sources: src.close()
 
-            log.info(f"  Saving cropped land cover...")
-            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            log.info(f"  Reprojecting to {target_crs} at {resolution}m resolution...")
+            
+            # 1. Calculate the new transform and dimensions
+            dst_transform, dst_width, dst_height = calculate_default_transform(
+                'EPSG:4326', target_crs, mosaic.shape[2], mosaic.shape[1], 
+                *bounds, resolution=resolution
+            )
+            
+            # 2. Resample using Nearest Neighbor to preserve categorical labels
+            reprojected = np.zeros((dst_height, dst_width), dtype=mosaic.dtype)
+            
+            reproject(
+                source=mosaic[0],
+                destination=reprojected,
+                src_transform=mosaic_transform,
+                src_crs='EPSG:4326',
+                dst_transform=dst_transform,
+                dst_crs=target_crs,
+                resampling=Resampling.nearest
+            )
+
+            log.info(f"  Saving reprojected land cover...")
             
             with rasterio.open(
                 output_file,
                 'w',
                 driver='GTiff',
-                height=mosaic.shape[1],
-                width=mosaic.shape[2],
+                height=dst_height,
+                width=dst_width,
                 count=1,
                 dtype=mosaic.dtype,
-                crs='EPSG:4326',
-                transform=mosaic_transform,
+                crs=target_crs,
+                transform=dst_transform,
                 compress='lzw',
                 nodata=0,
-            ) as dst:
-                dst.write(mosaic[0], 1)
+            ) as dst: dst.write(reprojected, 1)
                 
             log.info(f"  [✓] Land cover saved: {output_file}")
             self.print_land_cover_stats(output_file)
             return True
             
         except Exception as e:
-            log.error(f"  [x] Error downloading from Planetary Computer: {e}", exc_info=True)
+            log.error(f"  [✗] Error downloading from Planetary Computer: {e}", exc_info=True)
             return False
 
 
@@ -155,8 +178,10 @@ class LandCoverProcessor:
         bounds_list = self.config['geospatial']['bounds']
         bounds_tuple = tuple(bounds_list)
         
-        success = self.download_land_cover(bounds_tuple, str(target[0]))
+        crs = self.config['geospatial'].get('crs', 'EPSG:3857')
+        res = self.config['geospatial'].get('resolution', 10.0)
+        
+        success = self.download_land_cover(bounds_tuple, str(target[0]), target_crs=crs, resolution=res)
         if not success:
-            log.warning("Land cover download failed, biomes will use elevation-only classification")
+            log.warning("Land cover download failed")
         return None
-

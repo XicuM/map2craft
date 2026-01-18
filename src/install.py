@@ -1,4 +1,3 @@
-import os
 import shutil
 import sys
 import logging
@@ -15,8 +14,9 @@ class WorldInstaller:
         
             :return: Path to Minecraft saves directory
         '''
+        import os
         # Allow override from config
-        if 'minecraft' in self.config and 'saves_dir' in self.config['minecraft']:
+        if 'saves_dir' in self.config['minecraft']:
             return Path(self.config['minecraft']['saves_dir'])
         
         # Allow override from env
@@ -25,11 +25,11 @@ class WorldInstaller:
             
         # Default locations
         if os.name == 'nt':
-            return Path(os.environ.get('APPDATA', '')) / '.minecraft' / 'saves'
+            return Path(os.environ.get('APPDATA', ''))/'.minecraft'/'saves'
         elif sys.platform == 'darwin':
-            return Path(os.path.expanduser('~/Library/Application Support/minecraft/saves'))
+            return Path.home()/'Library/Application Support/minecraft/saves'
         else:
-            return Path(os.path.expanduser('~/.minecraft/saves'))
+            return Path.home()/'.minecraft'/'saves'
 
     def install_action(self, target, source, env):
         ''' Installs the exported world to the Minecraft saves directory.
@@ -43,9 +43,15 @@ class WorldInstaller:
         
         log.info(f"Installing world to: {target_dir}")
         
-        if not source_dir.exists():
-            log.error(f"Error: Source directory {source_dir} does not exist. Did export fail?")
-            return 1
+        # Handle WorldPainter nested export (e.g. export/default/heightmap/level.dat)
+        # If source_dir contains a single subdir with level.dat, use that.
+        if not (source_dir / "level.dat").exists():
+            subdirs = [x for x in source_dir.iterdir() if x.is_dir()]
+            for sub in subdirs:
+                if (sub / "level.dat").exists():
+                    log.info(f"Found world in subdirectory: {sub.name}")
+                    source_dir = sub
+                    break
 
         if target_dir.exists() and any(target_dir.iterdir()):
             log.warning(f"Target directory already exists and is not empty: {target_dir}")
@@ -55,12 +61,12 @@ class WorldInstaller:
                 response = input("Do you want to overwrite it? [y/N]: ").strip().lower()
                 if response not in ['y', 'yes']:
                     log.info("Aborting installation by user request.")
-                    raise RuntimeError("Installation aborted by user.")
+                    exit()
             except EOFError:
                 log.info("Non-interactive mode. Overwriting...")
 
             # Remove existing directory if overwriting
-            try: shutil.srmtree(target_dir)
+            try: shutil.rmtree(target_dir)
             except OSError as e:
                 log.error(f"Error removing existing directory: {e}")
                 raise
@@ -72,4 +78,4 @@ class WorldInstaller:
             log.error(f"Error installing world: {e}")
             raise
             
-        return None
+        return 0

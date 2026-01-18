@@ -49,10 +49,8 @@ def download_emodnet_bathymetry(bounds: Tuple[float, float, float, float],
                 continue
 
             out_path = Path(output_file)
-            out_path.parent.mkdir(parents=True, exist_ok=True)
             with open(out_path, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                for chunk in resp.iter_content(chunk_size=8192): f.write(chunk)
             
             with rasterio.open(out_path) as src:
                 data = src.read(1)
@@ -64,13 +62,14 @@ def download_emodnet_bathymetry(bounds: Tuple[float, float, float, float],
     return False
 
 def merge_land_and_bathymetry(land_file: str, bathymetry_file: str, 
-                              output_file: str, sea_level: float = 0.0) -> None:
+                              output_file: str, sea_level: float = 0.0, threshold_m: float = 5.0) -> None:
     ''' Merge land elevation with underwater bathymetry using raster reproject.
     
         :param str land_file: Path to land elevation GeoTIFF
         :param str bathymetry_file: Path to bathymetry GeoTIFF
         :param str output_file: Path to save merged output
         :param float sea_level: Sea level in meters
+        :param float threshold_m: Land threshold to consider as water (default 1.0)
     '''
     log.info("Merging land and bathymetry data...")
     
@@ -90,31 +89,39 @@ def merge_land_and_bathymetry(land_file: str, bathymetry_file: str,
             resampling=Resampling.bilinear, src_nodata=b_src.nodata, dst_nodata=np.nan
         )
 
-    # Coastline preservation: Previously used nearest neighbor near coast, but it caused pixelation.
-    # Now relying on high resolution land mask and smooth bathymetry.
-
     # Standardize bathymetry to negative values if median suggests they are depths
     if np.any(finite := np.isfinite(bathy_resampled)) and np.nanmedian(bathy_resampled) > 0:
         bathy_resampled[finite] = -np.abs(bathy_resampled[finite])
     
     # Merge: use bathy where land is <= threshold AND bathy is valid/below sea_level
-    # Strict boundary: Only use bathy where land is clearly underwater (e.g. < 1m)
-    # This (threshold=1.0) captures 0m void data often found in SRTM oceans
-    threshold_m = 1.0
+    # Strict boundary: Only use bathy where land is clearly underwater
+    # Threshold allows tuning this boundary.
+    log.info(f"Merging with threshold: {threshold_m}")
     
-    # Condition 1: Land is considered water (below threshold OR nodata/NaN)
-    land_is_water = (land_data < threshold_m) | (~np.isfinite(land_data))
+    # Condition 1: Land is considered water/placeholder in these cases:
+    # - Positive values very close to zero (< threshold) - these are placeholders
+    # - Negative values (any) - these are either valid bathymetry OR cubic artifacts, both should use bathy if available
+    # - NaN/nodata
+    # We DON'T use abs() because that would preserve negative cubic artifacts as "land"
+    land_is_placeholder = (land_data >= 0) & (land_data < threshold_m)  # Near-zero positive = placeholder
+    land_is_negative = land_data < 0  # Any negative = water (either real or artifact)
+    land_is_nodata = ~np.isfinite(land_data)
     
-    # Condition 2: Bathymetry is valid and logical (below sea level)
-    bathy_is_valid = np.isfinite(bathy_resampled) & (bathy_resampled < sea_level)
+    land_is_water = land_is_placeholder | land_is_negative | land_is_nodata
+    
+    # Condition 2: Bathymetry is valid and logical (below or AT sea level)
+    # We allow 0.0 because it might be a valid shallow water placeholder
+    bathy_is_valid = np.isfinite(bathy_resampled) & (bathy_resampled <= sea_level)
     
     use_bathy = land_is_water & bathy_is_valid
-    merged = np.where(use_bathy, bathy_resampled, land_data)
+    
+    # Force bathy to be at least slightly negative (-0.01) to ensure it's treated as water downstream
+    # but only if it was selected to replace land.
+    final_bathy = np.minimum(bathy_resampled, -0.01)
+    merged = np.where(use_bathy, final_bathy, land_data)
     
     log.info(f" Bathymetry used: {int(np.sum(use_bathy)):,} pixels ({np.sum(use_bathy)/use_bathy.size*100:.1f}%)")
-    
+
     meta.update(dtype=rasterio.float32, nodata=None)
-    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(output_file, 'w', **meta) as dst:
-        dst.write(merged, 1)
+    with rasterio.open(output_file, 'w', **meta) as dst: dst.write(merged, 1)
     log.info(f" [✓] Saved: {output_file}")

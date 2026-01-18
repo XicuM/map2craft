@@ -152,7 +152,6 @@ out geom;"""
     
     def _save_geojson(self, geojson: dict, target: Path) -> None:
         """Save GeoJSON to file."""
-        target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, 'w', encoding='utf-8') as f:
             json.dump(geojson, f, indent=2)
         log.info(f"[✓] Saved {len(geojson['features'])} features to {target}")
@@ -298,44 +297,5 @@ class OsmLoader:
         geojson = client._osm_to_geojson(osm_data, feature_type='LineString')
         client._save_geojson(geojson, Path(output_file))
 
-    def download_roads_action(self, target, source, env):
-        ''' SCons action for downloading roads.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        road_types = list(self.config['roads']['road_widths'].keys())
-        bounds_list = self.config['geospatial']['bounds']
-        bounds_tuple = tuple(bounds_list)
-        self.download_roads(bounds_tuple, str(target[0]), road_types)
-        return None
 
-    def download_buildings_action(self, target, source, env):
-        ''' SCons action for downloading buildings.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        bounds_list = self.config['geospatial']['bounds']
-        bounds_tuple = tuple(bounds_list)
-        
-        # Get building types from config
-        building_types = self.config.get('buildings', {}).get('types', [])
-        
-        self.download_buildings(bounds_tuple, str(target[0]), building_types)
-        return None
-
-    def download_waterways_action(self, target, source, env):
-        ''' SCons action for downloading waterways.
-            
-            :param target: SCons target list
-            :param source: SCons source list
-            :param env: SCons environment
-        '''
-        bounds_list = self.config['geospatial']['bounds']
-        bounds_tuple = tuple(bounds_list)
-        self.download_waterways(bounds_tuple, str(target[0]))
-        return None
 

@@ -21,8 +21,8 @@ def deep_merge(base, overlay):
 def load_config(config_name=None, base_path='.'):
     '''Load and merge default.yaml with an optional environment-specific YAML.'''
     config_dir = Path(base_path)/'config'
-    default_path = config_dir/'default.yaml'
     
+    default_path = config_dir/'default.yaml'
     if not default_path.exists():
         raise FileNotFoundError(f'Required base config missing: {default_path}')
         
