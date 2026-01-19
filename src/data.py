@@ -68,6 +68,7 @@ class ElevationLoader:
         log.info(f"Need {len(tiles_needed)} tiles.")
         
         temp_dir = Path(output_path).parent / "tiles_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
         
         # 2. Download tiles
         tile_files = []

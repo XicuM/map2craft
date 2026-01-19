@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 log = logging.getLogger(__name__)
+from src.constants import BIOME_TO_TERRAIN_MAP
 
 class WorldPainterInterface:
     def __init__(self, config={}):
@@ -46,6 +47,60 @@ class WorldPainterInterface:
             return biomes_found
         except Exception as e:
             log.error(f"Failed to split biomes: {e}")
+            return {}
+
+    def split_seabed_mask(self, seabed_mask_path, output_dir):
+        """Splits an RGB seabed mask into separate binary masks for Gravel and Rock.
+           Red: Sand (Default, ignored), Green: Gravel, Blue: Rock.
+        """
+        if not seabed_mask_path or not Path(seabed_mask_path).exists():
+            return {}
+        
+        try:
+            img = Image.open(seabed_mask_path)
+            data = np.array(img)
+            
+            # RGB check
+            if len(data.shape) < 3 or data.shape[2] < 3:
+                log.warning("Seabed mask is not RGB")
+                return {}
+                
+            masks_found = {}
+            output_dir_path = Path(output_dir)
+            if not output_dir_path.exists():
+                output_dir_path.mkdir(parents=True, exist_ok=True)
+            
+            # Red Channel = Sand
+            # Green Channel = Gravel
+            # Blue Channel = Rock
+            
+            # Create Sand Mask
+            sand_pixels = data[:, :, 0]
+            if np.any(sand_pixels > 127):
+                mask_img = Image.fromarray(sand_pixels, mode='L')
+                out_path = output_dir_path / "seabed_sand.png"
+                mask_img.save(out_path)
+                masks_found['sand'] = str(out_path)
+
+            # Create Gravel Mask
+            gravel_pixels = data[:, :, 1]
+            if np.any(gravel_pixels > 127):
+                mask_img = Image.fromarray(gravel_pixels, mode='L')
+                out_path = output_dir_path / "seabed_gravel.png"
+                mask_img.save(out_path)
+                masks_found['gravel'] = str(out_path)
+
+            # Create Rock Mask
+            rock_pixels = data[:, :, 2]
+            if np.any(rock_pixels > 127):
+                mask_img = Image.fromarray(rock_pixels, mode='L')
+                out_path = output_dir_path / "seabed_rock.png"
+                mask_img.save(out_path)
+                masks_found['rock'] = str(out_path)
+                
+            return masks_found
+        except Exception as e:
+            log.error(f"Failed to split seabed mask: {e}")
             return {}
 
     def generate_script(self, heightmap_path, output_world_path, metadata_dict, **kwargs):
@@ -135,45 +190,184 @@ class WorldPainterInterface:
             
             # Base terrain
             "print('Applying base terrain (Grass)...');",
-            "wp.applyHeightMap(heightMap).toWorld(world).applyToTerrain().fromLevels(0, 65535).toTerrain(1).go();"
+            "wp.applyHeightMap(heightMap).toWorld(world).applyToTerrain().fromLevels(0, 65535).toTerrain(0).go();"
         ]
 
-        # 1. Apply Terrain Types using Masks
-        for mask_name, terrain_id in [('water_mask', 5), ('slope_mask', 2), ('road_mask', 100)]:
-            mask_path = kwargs.get(mask_name)
-            if mask_path:
-                lines.append(f"print('Applying {mask_name}...');")
-                lines.append(f"var mask_{mask_name} = wp.getHeightMap().fromFile('{self._to_wp_path(mask_path)}').go();")
-                lines.append(f"if (mask_{mask_name}) wp.applyHeightMap(mask_{mask_name}).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain({terrain_id}).go();")
-
-        # 2. Apply Biomes
+        # Helper mapping for Biome -> Terrain Name conversions (approximate)
+        # Note: We still rely on constants for ID -> ID, but let's try to map names if possible?
+        # Actually, for Biomes we are mapping Biome ID -> Terrain ID.
+        # If we want to use names, we need the map to be Biome ID -> Terrain Name.
+        # Let's keep the Biome part as is (since it might be mapping to custom integer terrain IDs from a theme?)
+        # NO, if the user sees Dirt instead of Stone for ID 2, then ID 2 is likely Dirt.
+        # So checking BIOME_TO_TERRAIN_MAP: 25 -> 2. So Stone Shore -> Dirt.
+        # We should update BIOME_TO_TERRAIN_MAP to use new IDs or names.
+        # But `constants.py` is shared.
+        # Ideally we update the script to look up the terrain for the biome ID dynamically if possible, 
+        # but standard practice is hardcoded IDs.
+        # A safer bet is to define standard terrains by name and use them for the Masks.
+        # For Biomes, we might need to update the constants or mapping logic.
+        
+        # Let's fix the Masks first (Slope/Stone, Seabed/Sand/Gravel/Rock).
+        
+        lines.append("// Define Terrains using verified Wiki IDs")
+        lines.append("// ID lists: https://www.worldpainter.net/trac/wiki/Scripting/TerrainTypeValues")
+        lines.append("var tGrass = 0;   // Grass")
+        lines.append("var tDirt = 2;    // Dirt") 
+        lines.append("var tSand = 5;    // Sand")
+        lines.append("var tGravel = 34; // Gravel")
+        lines.append("var tStone = 28;  // Stone")
+        lines.append("var tRock = 29;   // Rock (Stone + Cobble)")
+        lines.append("var tWater = 37;  // Water")
+        lines.append("var tDirtPath = 100; // Dirt Path")
+        lines.append("var tSandstone = org.pepsoft.worldpainter.Terrain.SANDSTONE;")
+        lines.append("var tMesa = org.pepsoft.worldpainter.Terrain.MESA;")
+        
+        # 1. Apply Biomes (Base Layer)
         biomes = kwargs.get('biomes', {})
         if biomes:
             lines.append("print('Loading Biomes layer...');")
             lines.append("var biomesLayer = wp.getLayer().withName('Biomes').go();")
             
-            biome_terrain_map = { 0: 0, 24: 0, 45: 1, 16: 5, 25: 2, 37: 6 }
+            # Dynamic Biome ID lookup for modern biomes (1.19+)
+            lines.append("// Dynamic ID lookup for modern biomes")
+            lines.append("var mangroveBiome = wp.getBiome('minecraft:mangrove_swamp');")
+            lines.append("var mangroveId = (mangroveBiome != null) ? mangroveBiome.getId() : 6; // Fallback to Swamp if missing")
+            lines.append("print('Mangrove Swamp ID resolved to: ' + mangroveId);")
+            
+            biome_terrain_map = BIOME_TO_TERRAIN_MAP
             
             for bid, b_mask in biomes.items():
                 bid_int = int(bid)
                 mask_var = f"biomeMask_{bid_int}"
                 lines.append(f"print('Applying biome {bid_int}...');")
                 lines.append(f"var {mask_var} = wp.getHeightMap().fromFile('{self._to_wp_path(b_mask)}').go();")
-                if bid_int != 0:
-                    lines.append(f"if ({mask_var} && biomesLayer) wp.applyHeightMap({mask_var}).toWorld(world).applyToLayer(biomesLayer).fromLevels(128, 255).toLevel({bid_int}).go();")
                 
-                if bid_int in biome_terrain_map:
-                    target_terrain = biome_terrain_map[bid_int]
-                    lines.append(f"if ({mask_var}) wp.applyHeightMap({mask_var}).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain({target_terrain}).go();")
+                # Determine target WP Biome ID
+                target_id_script = str(bid_int)
+                if bid_int == 63: # Internal ID for Mangrove Swamp
+                    target_id_script = "mangroveId"
+                
+                if bid_int != 0:
+                    lines.append(f"if ({mask_var} && biomesLayer) wp.applyHeightMap({mask_var}).toWorld(world).applyToLayer(biomesLayer).fromLevels(128, 255).toLevel({target_id_script}).go();")
+                
+                # Apply terrain for specific biomes (Stone Shore, Beach, Swamp)
+                target_terrain_script = None
+                
+                # Explicit overrides for standard biomes
+                if bid_int == 25: target_terrain_script = "tStone" # Stone Shore
+                elif bid_int == 16: target_terrain_script = "tSand" # Beach
+                elif bid_int == 6: target_terrain_script = "tDirt" # Swamp
+                elif bid_int == 63: target_terrain_script = "tDirt" # Mangrove Swamp
+                elif bid_int == 7: target_terrain_script = "tDirt" # River
+                elif bid_int in [0, 24, 45]: target_terrain_script = "tSand" # Ocean biomes (0, 24, 45)
+                elif bid_int in [37, 38, 39]: target_terrain_script = "tMesa" # Badlands
+                
+                # Fallback to ID map if strictly defined there, but handle carefully
+                elif bid_int in biome_terrain_map:
+                     # Use the mapped ID directly? Most are integers.
+                     # But some in map might be wrong (e.g. 2 -> Sand, but maybe map expected 2 to be Stone?)
+                     # BIOME_TO_TERRAIN_MAP has: 25->2. If we use 2, we get Sand. User wants Stone. 
+                     # So we MUST override 25 to tStone (which is 4).
+                     pass
 
-        # 3. Save
+                if target_terrain_script:
+                     lines.append(f"if ({mask_var}) wp.applyHeightMap({mask_var}).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain({target_terrain_script}).go();")
+
+        # 2. Apply Generic Masks
+        
+        if kwargs.get('water_mask'):
+             mask_path = self._to_wp_path(kwargs.get('water_mask'))
+             lines.append(f"print('Applying water_mask (Masking only, terrain handled by biomes)...');")
+             # We no longer apply a blunt terrain (like tDirt) to the whole water mask.
+             # Terrain is now handled by Ocean biomes (Sand) and Inland biomes (Dirt).
+             # This prevents the 'Dirt on Coast' issue.
+             # lines.append(f"var mask_water = wp.getHeightMap().fromFile('{mask_path}').go();")
+             # lines.append(f"if (mask_water) wp.applyHeightMap(mask_water).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tDirt).go();")
+
+        if kwargs.get('slope_mask'):
+             mask_path = self._to_wp_path(kwargs.get('slope_mask'))
+             lines.append(f"print('Applying slope_mask (Stone)...');")
+             lines.append(f"var mask_slope = wp.getHeightMap().fromFile('{mask_path}').go();")
+             # Use Stone (4) or Rock (5)? Usually Stone for cliffs.
+             lines.append(f"if (mask_slope) wp.applyHeightMap(mask_slope).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tStone).go();")
+
+        if kwargs.get('road_mask'):
+             mask_path = self._to_wp_path(kwargs.get('road_mask'))
+             lines.append(f"print('Applying road_mask (Dirt Path)...');")
+             lines.append(f"var mask_roads = wp.getHeightMap().fromFile('{mask_path}').go();")
+             lines.append(f"if (mask_roads) wp.applyHeightMap(mask_roads).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tDirtPath).go();")
+
+        # 3. Apply Seabed Classification
+        seabed_masks = kwargs.get('seabed_masks', {})
+        if seabed_masks:
+            lines.append("print('Applying Seabed Classification...');")
+            
+            if 'sand' in seabed_masks:
+                path = self._to_wp_path(seabed_masks['sand'])
+                lines.append(f"var mask_sand = wp.getHeightMap().fromFile('{path}').go();")
+                lines.append(f"if (mask_sand) wp.applyHeightMap(mask_sand).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tSand).go();")
+
+            if 'gravel' in seabed_masks:
+                path = self._to_wp_path(seabed_masks['gravel'])
+                lines.append(f"var mask_gravel = wp.getHeightMap().fromFile('{path}').go();")
+                lines.append(f"if (mask_gravel) wp.applyHeightMap(mask_gravel).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tGravel).go();")
+            
+            if 'rock' in seabed_masks:
+                path = self._to_wp_path(seabed_masks['rock'])
+                lines.append(f"var mask_rock = wp.getHeightMap().fromFile('{path}').go();")
+                # Use Rock (5) or Stone (4)? Maybe Rock for underwater?
+                # Let's use tStone to be consistent with cliffs, or tRock if preferred.
+                lines.append(f"if (mask_rock) wp.applyHeightMap(mask_rock).toWorld(world).applyToTerrain().fromLevels(128, 255).toTerrain(tStone).go();")
+
+        # 4. Custom Layers (e.g., Rivers, Custom Ground Cover)
+        custom_layers = kwargs.get('custom_layers', {})
+        if custom_layers:
+            lines.append("// Custom Layers")
+            for name, details in custom_layers.items():
+                layer_path = details.get('layer_path')
+                mask_path = details.get('mask_path')
+                
+                if layer_path and mask_path:
+                    abs_layer = self._to_wp_path(layer_path)
+                    abs_mask = self._to_wp_path(mask_path)
+                    # Default to level 15 (max density/on) unless specified
+                    lvl = details.get('level', 15) 
+                    
+                    # Sanitize variable name
+                    safe_name = "".join(c for c in name if c.isalnum())
+                    var_layer = f"cl_{safe_name}"
+                    var_mask = f"cm_{safe_name}"
+                    
+                    lines.append(f"print('Applying Custom Layer: {name}...');")
+                    lines.append(f"var {var_layer} = wp.getLayer().fromFile('{abs_layer}').go();")
+                    lines.append(f"var {var_mask} = wp.getHeightMap().fromFile('{abs_mask}').go();")
+                    # Apply mask: pixels > 127 set layer to 'lvl'
+                    lines.append(f"if ({var_layer} && {var_mask}) wp.applyHeightMap({var_mask}).toWorld(world).applyToLayer({var_layer}).fromLevels(128, 255).toLevel({lvl}).go();")
+
+        # 5. Global Population (Trees, Ores, etc.)
+        if mp.get('populate', False):
+            exclude_biomes = mp.get('populate_exclude_biomes', [])
+            lines.append("print('Applying Global Population (Trees, Ores, Structures)...');")
+            lines.append("var layer_populate = wp.getLayer().withName('Populate').go();")
+            # Apply to the entire heightmap (which covers the whole world)
+            lines.append("wp.applyHeightMap(heightMap).toWorld(world).applyToLayer(layer_populate).fromLevels(0, 65535).toLevel(1).go();")
+            
+            # Exclude specific biomes if configured
+            if exclude_biomes:
+                for bid_int in exclude_biomes:
+                    mask_var = f"biomeMask_{bid_int}"
+                    # We only apply the exclusion if the mask for that biome was actually generated (exists in this run)
+                    if biomes and bid_int in biomes:
+                        lines.append(f"print('Excluding biome {bid_int} from population...');")
+                        lines.append(f"if (typeof {mask_var} !== 'undefined' && {mask_var} && layer_populate) wp.applyHeightMap({mask_var}).toWorld(world).applyToLayer(layer_populate).fromLevels(128, 255).toLevel(0).go();")
+
+
+        # 6. Save
         lines.extend([
             f"print('Saving world to {abs_out}...');",
             f"wp.saveWorld(world).toFile('{abs_out}').go();",
             "print('Script completed successfully!');"
         ])
-        
-        return "\n".join(lines)
         
         return "\n".join(lines)
 
@@ -184,8 +378,7 @@ class WorldPainterInterface:
         
         # Set JAVA Options for memory if not already set
         env = os.environ.copy()
-        if '_JAVA_OPTIONS' not in env:
-            env['_JAVA_OPTIONS'] = '-Xmx4G'
+        if '_JAVA_OPTIONS' not in env: env['_JAVA_OPTIONS'] = '-Xmx8G'
             
         log.info(f"Running WorldPainter: {cmd[0]}")
         try:
@@ -194,5 +387,3 @@ class WorldPainterInterface:
         except subprocess.CalledProcessError as e:
             log.error(f"WorldPainter execution failed: {e}")
             raise
-
-

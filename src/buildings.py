@@ -132,8 +132,19 @@ class BuildingsProcessor:
         '''
         is_pre_scaled = env.get('PRE_SCALED', False)
         
+        # Find metadata.json in sources (it was moved in dependency list)
+        metadata_file = next((str(s) for s in source if str(s).endswith('metadata.json')), None)
+        if not metadata_file:
+            # Fallback for old behavior or if something else is passed
+            # Original was source[2], but now source[2] is likely the script
+            # If we can't find it by name, maybe log a warning or try hardcoded path
+            # But in the new pipeline it SHOULD be there.
+            log.warning("Could not find metadata.json in sources, checking index 6...")
+            if len(source) > 6:
+                metadata_file = str(source[6])
+                
         self.compute_building_placements(
             str(source[0]), str(source[1]), str(target[0]),
-            str(source[2]), is_pre_scaled=is_pre_scaled
+            metadata_file, is_pre_scaled=is_pre_scaled
         )
         return 0

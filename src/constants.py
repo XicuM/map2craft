@@ -15,6 +15,7 @@ BIOME_IDS = {
     'forest': 4,
     'taiga': 5,
     'swamp': 6,
+    'mangrove_swamp': 63,
     'river': 7,
     'frozen_ocean': 10,
     'frozen_river': 11,
@@ -48,6 +49,7 @@ BIOME_IDS = {
     'badlands_plateau': 39,
     'regular_ocean': 40, # Custom/Generic
     'lukewarm_ocean': 45,
+    'sunflower_plains': 129,
 }
 
 # Reverse mapping for visualization/logging
@@ -60,13 +62,15 @@ BIOME_COLORS = {
     4: (5, 102, 33),     # Forest - dark green
     5: (11, 102, 89),    # Taiga - teal
     6: (7, 249, 178),    # Swamp - cyan-green
-    7: (0, 0, 255),      # River - blue
+    63: (0, 207, 117),   # Mangrove Swamp - green
+    7: (86, 173, 245),      # River - blue
     16: (250, 222, 85),  # Beach - sand yellow
     24: (0, 0, 80),      # Deep Ocean - very dark blue
     25: (162, 162, 132), # Stone Shore - gray
     35: (189, 178, 95),  # Savanna - tan
-    37: (217, 69, 21),   # Badlands - orange-red
+    37: (219, 127, 57),   # Badlands - orange-red
     45: (0, 119, 190),   # Lukewarm Ocean - lighter blue
+    129: (180, 200, 50), # Sunflower Plains - yellow-green
 }
 
 # WorldPainter Layer Mapping (Biome ID -> Terrain ID or Layer ID)
@@ -80,8 +84,9 @@ BIOME_TO_TERRAIN_MAP = {
     45: 1,  # Lukewarm Ocean -> ?
     16: 5,  # Beach -> Sand
     25: 2,  # Stone Shore -> Stone
-    37: 6,  # Badlands -> Red Sand
+    37: 11, # Badlands -> Sandstone
     6: 12,  # Swamp -> Dirt
+    63: 12, # Mangrove Swamp -> Dirt
     7: 12   # River -> Dirt
 }
 
@@ -131,8 +136,8 @@ TERRAIN_COLORS = [
     (141, 179, 96),  # 2: Grass
     (122, 122, 122), # 3: Stone (Steep Slopes)
     (247, 238, 171), # 4: Beach Sand
-    (200, 100, 40),  # 5: Badlands
-    (139, 106, 71),  # 6: Dirt Path (Roads)
+    (210, 180, 120), # 5: Sandstone (Badlands)
+    (171, 126, 72), # 6: Dirt Path (Roads)
     (125, 92, 52)    # 7: Dirt (River Bed)
 ]
 
@@ -142,7 +147,7 @@ TERRAIN_NAMES_LIST = [
     'Grass', 
     'Stone (Steep Slopes)', 
     'Beach Sand', 
-    'Badlands', 
+    'Sandstone', 
     'Dirt Path (Roads)',
     'Dirt (River Bed)'
 ]

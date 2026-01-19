@@ -155,23 +155,26 @@ if has_seabed:
 env.Command(meta_json, [elev_proc, v_meta, v_mc, v_project, v_terrain, "src/metadata.py"], comp['meta'].metadata_action, PRE_SCALED=env.get('PRE_SCALED', False))
 
 
-biome_srcs = [elev_proc] + ([lc_file] if lc_file else []) + [v_biomes, v_geo, v_terrain, "src/biomes.py", "src/geometry.py"]
-env.Command(biome_map, biome_srcs, adapter.biome_map_action, PRE_SCALED=env.get('PRE_SCALED', False))
-
 # 4. OSM Extensions
 def setup_osm(name, flag, loader_act, proc_act, out_name, config_val):
     if not flag: return None, None
     raw = str(data_dir / f"{name}.geojson")
     proc = str(build_dir / out_name)
-    env.Command(raw, [v_geo, "src/osm.py"], loader_act)
-    # Special case for buildings requiring metadata
-    deps = [raw, elev_proc, meta_json, f"src/{name}.py", config_val] if name == "buildings" else [raw, elev_proc, f"src/{name}.py", config_val]
+    # 1. Raw download depends on config_val (for types/filters) and v_geo (bounds)
+    env.Command(raw, [v_geo, config_val, "src/osm.py"], loader_act)
+    # 2. Process depends on raw data, elevation, config_val (widths/types), v_mc (scale), and v_geo
+    deps = [raw, elev_proc, f"src/{name}.py", config_val, v_mc, v_geo]
+    if name == "buildings":
+        deps.append(meta_json)
     env.Command(proc, deps, proc_act, PRE_SCALED=env.get('PRE_SCALED', False))
     return raw, proc
 
 roads_raw, road_mask = setup_osm("roads", has_roads, adapter.download_roads_action, comp['road'].road_mask_action, "road_mask.tif", v_roads)
 bldgs_raw, bldgs_out = setup_osm("buildings", has_buildings, adapter.download_buildings_action, comp['bldg'].building_placements_action, "building_placements.yaml", v_bldgs)
 water_raw, river_mask = setup_osm("waterways", has_waterways, adapter.download_waterways_action, comp['water'].river_mask_action, "masks/river_mask.png", v_water)
+
+biome_srcs = [elev_proc, (lc_file if lc_file else "None"), (river_mask if has_waterways else "None"), v_biomes, v_geo, v_terrain, "src/biomes.py", "src/geometry.py"]
+env.Command(biome_map, biome_srcs, adapter.biome_map_action, PRE_SCALED=env.get('PRE_SCALED', False))
 
 # 5. WorldPainter & Export
 wp_script, wp_world = str(build_dir / "build_world.js"), str(build_dir / f"{project_name}.world")
@@ -206,13 +209,14 @@ env.Command(install_ldat, [export_ldat, amulet_sentinel], comp['inst'].install_a
 # 6. Visualizations
 preview_dir = build_dir / "preview"
 v_terrain = str(preview_dir / "heightmap.png")  # Renamed from heightmap_preview.png
-v_biome = str(preview_dir / "biome.png")
+v_biome = str(preview_dir / "biomes.png")
 v_types = str(preview_dir / "terrain.png")      
 v_lc = str(preview_dir / "land_cover.png")
 
 # Build terrain visualization sources dynamically - NO seabed for heightmap (use bathymetry gradient)
-terrain_viz_sources = [heightmap, water_mask, "src/visualize.py"]
-# Note: Seabed mask intentionally omitted here to show bathymetry depth gradient instead
+terrain_viz_sources = [heightmap, water_mask, (seabed_cover_mask or "None"), (river_mask or "None"), "src/visualize.py"]
+# Note: Seabed mask intentionally omitted before, but I'll add it as placeholder to match adapter's indexing if needed.
+# Actually, the adapter expects: elev, water, seabed, river.
 
 env.Command(v_terrain, terrain_viz_sources, adapter.terrain_viz_action)
 
@@ -221,10 +225,19 @@ if has_biomes:
     env.Command(v_biome, [biome_map, "src/visualize.py"], adapter.biome_viz_action)
     
     # Build terrain types sources dynamically
-    types_sources = [heightmap, water_mask, biome_map, (road_mask or "None"), meta_json, slope_mask]
-    if seabed_cover_mask:
-        types_sources.append(seabed_cover_mask)
-    types_sources.extend(["src/visualize.py", "src/biomes.py"])
+    # Adapter expects: heightmap, water, biome, road, meta, steep, seabed, river
+    types_sources = [
+        heightmap, 
+        water_mask, 
+        biome_map, 
+        (road_mask or "None"), 
+        meta_json, 
+        slope_mask, 
+        (seabed_cover_mask or "None"),
+        (river_mask or "None"),
+        "src/visualize.py", 
+        "src/biomes.py"
+    ]
     
     env.Command(v_types, types_sources, adapter.terrain_types_viz_action)
     viz_targets.extend([v_biome, v_types])

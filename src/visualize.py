@@ -122,6 +122,7 @@ class MapVisualizer:
 
     def visualize_terrain(self, elevation_file: str, output_file: str, 
                         water_mask_file: Optional[str] = None,
+                        river_mask_file: Optional[str] = None,
                         biome_map_file: Optional[str] = None,
                         seabed_cover_file: Optional[str] = None) -> None:
         ''' Create a terrain visualization with optional overlays using matplotlib.
@@ -129,6 +130,7 @@ class MapVisualizer:
             :param str elevation_file: Path to elevation GeoTIFF
             :param str output_file: Path to save visualization PNG
             :param str water_mask_file: Optional path to water mask
+            :param str river_mask_file: Optional path to river mask
             :param str biome_map_file: Optional path to biome map for overlay
             :param str seabed_cover_file: Optional path to seabed cover RGB mask
         '''
@@ -179,50 +181,14 @@ class MapVisualizer:
                     rgb[water_pixels] = water_colors
                 else:
                     rgb[water_pixels] = [0.0, 0.39, 0.78]
+
+        # Apply river mask if available: REMOVED per user request for pure heightmap data
+        # If rivers are carved in elevation, they will show naturally. 
+        # If not, they are just terrain features not to be confused with height data.
         
-        # Apply seabed cover visualization if available
+        # Apply seabed cover visualization if available: REMOVED per user request
+        # Heightmap should only show elevation/bathymetry depth, not terrain types.
         seabed_labels = []
-        if seabed_cover_file and Path(seabed_cover_file).exists() and water_pixels is not None:
-            log.info(f"Applying seabed cover overlay from {seabed_cover_file}")
-            try:
-                seabed_mask = np.array(Image.open(seabed_cover_file))
-                log.info(f"Seabed mask shape: {seabed_mask.shape}, Elevation shape: {elevation.shape}")
-                if seabed_mask.shape[:2] == elevation.shape:
-                    # Seabed mask is RGB: R=sand, G=gravel, B=rock
-                    # Define colors for each type using constants (normalize to 0-1)
-                    sand_color = np.array(self._normalize_color(SEABED_COLORS['sand']))
-                    gravel_color = np.array(self._normalize_color(SEABED_COLORS['gravel']))
-                    rock_color = np.array(self._normalize_color(SEABED_COLORS['rock']))
-                    
-                    # Extract channels (normalize 0-1)
-                    sand_mask = seabed_mask[:, :, 0] > 127
-                    gravel_mask = seabed_mask[:, :, 1] > 127
-                    rock_mask = seabed_mask[:, :, 2] > 127
-                    
-                    # Apply layers in priority order (rock > gravel > sand)
-                    # Only apply to water pixels
-                    sand_pixels = water_pixels & sand_mask & ~gravel_mask & ~rock_mask
-                    gravel_pixels = water_pixels & gravel_mask & ~rock_mask
-                    rock_pixels = water_pixels & rock_mask
-                    
-                    log.info(f"Applying seabed: sand={np.sum(sand_pixels)}, gravel={np.sum(gravel_pixels)}, rock={np.sum(rock_pixels)}")
-                    
-                    rgb[sand_pixels] = sand_color
-                    rgb[gravel_pixels] = gravel_color
-                    rgb[rock_pixels] = rock_color
-                    
-                    # Track which seabed types are present
-                    if np.any(sand_pixels):
-                        seabed_labels.append(('Sand Bottom', sand_color))
-                    if np.any(gravel_pixels):
-                        seabed_labels.append(('Gravel/Stones', gravel_color))
-                    if np.any(rock_pixels):
-                        seabed_labels.append(('Rock/Bedrock', rock_color))
-                else:
-                    log.warning(f"Seabed mask shape {seabed_mask.shape[:2]} doesn't match elevation shape {elevation.shape}")
-                        
-            except Exception as e:
-                log.warning(f"Could not apply seabed cover mask: {e}")
         
         # Plot
         plt.figure(figsize=(16, 12), dpi=150)
@@ -238,6 +204,8 @@ class MapVisualizer:
                 # Add seabed types
                 for label, color in seabed_labels:
                     handles.append(Patch(color=color, label=label))
+        
+        # if river_mask_file: REMOVED legend entry for rivers as they are not overlaid
 
         self._add_legend(handles, 'Terrain Features')
         self._save_plot(output_file)
@@ -381,6 +349,7 @@ class MapVisualizer:
         output_file: str,
         metadata_file: str,
         water_mask_file: Optional[str] = None,
+        river_mask_file: Optional[str] = None,
         biome_map_file: Optional[str] = None,
         road_mask_file: Optional[str] = None,
         steep_slopes_mask_file: Optional[str] = None,
@@ -392,6 +361,7 @@ class MapVisualizer:
             :param str output_file: Path to save visualization PNG
             :param str metadata_file: Path to metadata JSON
             :param str water_mask_file: Optional path to water mask
+            :param str river_mask_file: Optional path to river mask
             :param str biome_map_file: Optional path to biome map
             :param str road_mask_file: Optional path to road mask
             :param str steep_slopes_mask_file: Optional path to steep slopes mask
@@ -425,6 +395,7 @@ class MapVisualizer:
             return
 
         water_mask = _load_mask(water_mask_file)
+        river_mask = _load_mask(river_mask_file)
         road_mask = _load_mask(road_mask_file)
         biome_map = _load_mask(biome_map_file)
         steep_slopes_mask = _load_mask(steep_slopes_mask_file)
@@ -465,12 +436,17 @@ class MapVisualizer:
             terrain[is_water] = 1 # Default to Sandy Ocean Floor
             terrain[~is_water] = 2 # Grass
             
-            # Use biome map to distinguish inland water (Dirt bottom)
+            # Use biome map to distinguish inland water (Swamp/River biomes)
             if biome_map is not None:
-                # 6 = Swamp, 7 = River
-                is_inland = (biome_map == 6) | (biome_map == 7)
-                terrain[is_water & is_inland] = 7 # Dirt (River Bed)
-            
+                # 6 = Swamp, 63 = Mangrove Swamp, 7 = River
+                is_swamp = (biome_map == 6) | (biome_map == 63)
+                is_river_biome = (biome_map == 7)
+                
+                # We color Biome-based "Inland Water" as ID 7 (Dirt/River Bed)
+                # But if it's strictly a Swamp biome, we might want a different look
+                terrain[is_water & is_swamp] = 7 # Dirt (River Bed)
+                terrain[is_water & is_river_biome] = 7
+                
             # Apply seabed classification if available
             if seabed_mask is not None and seabed_mask.shape[:2] == terrain.shape:
                 # Seabed mask channels: R=sand, G=gravel, B=rock
@@ -503,7 +479,8 @@ class MapVisualizer:
             (stone_shore_mask, 3, 0),    # Stone shore from biomes
             (steep_slopes_mask, 3, slope_viz_threshold), # Explicit slope gradient (Stone)
             (badlands_mask, 5, 0),       # Badlands
-            (road_mask, 6, 0)            # Roads (High priority)
+            (road_mask, 6, 0),           # Roads (ID 6)
+            (river_mask, 7, 127)         # OSM Waterways -> Dirt (River Bed) (ID 7)
         ]:
             if mask is not None:
                 # Resize if necessary

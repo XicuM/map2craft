@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict
 from rasterio.warp import reproject, Resampling
 from scipy import ndimage
+from PIL import Image
 
 log = logging.getLogger(__name__)
 from src.constants import BIOME_IDS
@@ -91,27 +92,31 @@ class BiomeMapper:
         # 3. Land Cover Conditions (Applied if not coastal/cliff)
         if land_cover is not None:
             conds += [
-                ~is_water & (land_cover == 90), # Wetland -> Swamp
+                ~is_water & (land_cover == 90), # Wetland -> Mangrove Swamp
+                ~is_water & (land_cover == 95), # Mangroves -> Mangrove Swamp
                 ~is_water & (land_cover == 10), # Trees -> Forest
                 ~is_water & (land_cover == 60), # Bare -> Badlands
-                ~is_water & ((land_cover == 20) | (land_cover == 30)) # Shrub/Grass -> Savanna
+                ~is_water & (land_cover == 20), # Shrubland -> Savanna (Grassland 30 -> Default Plains)
+                ~is_water & (land_cover == 40)  # Cropland -> Sunflower Plains
             ]
-            choices += [BIOME_IDS['swamp'], BIOME_IDS['forest'], BIOME_IDS['badlands'], BIOME_IDS['savanna']]
+            choices += [BIOME_IDS['mangrove_swamp'], BIOME_IDS['mangrove_swamp'], BIOME_IDS['forest'], BIOME_IDS['badlands'], BIOME_IDS['savanna'], BIOME_IDS['sunflower_plains']]
 
         # 4. Swamp (Inland Water) - Last fallback for water
         # If it was water, but failed Ocean checks (because it's inland), catch it here.
         conds.append(is_inland_water)
-        choices.append(BIOME_IDS['swamp'])
+        choices.append(BIOME_IDS['mangrove_swamp'])
 
         return np.select(conds, choices, default=BIOME_IDS['plains']).astype(np.uint8)
 
     def create_biome_map(self, elevation_file: str, land_cover_file: Optional[str], 
-                        output_file: str, is_pre_scaled: bool = False) -> None:
+                        output_file: str, river_mask_file: Optional[str] = None, 
+                        is_pre_scaled: bool = False) -> None:
         ''' Orchestrates the loading, classification, and saving of the biome map.
         
             :param str elevation_file: Path to elevation GeoTIFF
             :param str land_cover_file: Path to land cover GeoTIFF
             :param str output_file: Path to save biome map
+            :param str river_mask_file: Optional path to river mask
         '''
         log.info("Generating biome map...")
         
@@ -132,6 +137,16 @@ class BiomeMapper:
             
             lc = self.load_and_resample_land_cover(land_cover_file, elev.shape, trans, crs) if land_cover_file else None
              
+            # Load River Mask
+            river_mask = None
+            if river_mask_file and Path(river_mask_file).exists():
+                 try:
+                     image = np.array(Image.open(river_mask_file))
+                     if image.shape == elev.shape:
+                         river_mask = image > 127
+                         log.info(" Loaded River Mask for biome generation")
+                 except Exception as e:
+                     log.warning(f"Failed to load river mask {river_mask_file}: {e}")
             
             # Get terrain configuration
             thresholds = self.config.get('terrain', {})
@@ -204,6 +219,23 @@ class BiomeMapper:
                 inland_water_kernel_size=inland_water_kernel
             )
             
+            # Apply River Mask (Overwriting other biomes)
+            if river_mask is not None:
+                is_water = elev_m <= sea_level
+                # Apply river biome to river mask pixels
+                # Do we force it even in deep ocean? Probably not, but OSM rivers shouldn't be there.
+                # Do we force it on land? Yes, that's the point.
+                # But if elevation is invalid/undefined?
+                # Just applying directly.
+                # Note: river_mask is boolean logic.
+                
+                # Should we prevent river biome in Deep Ocean?
+                # If elevation < deep_depth, keep Deep Ocean?
+                # Let's say yes for consistency, but OSM data is source of truth?
+                # Let's trust OSM.
+                biome_map[river_mask] = BIOME_IDS['river']
+                log.info(f" Applied River biome to {np.sum(river_mask)} pixels")
+
             # Save biome map
             profile.update(dtype=rasterio.uint8, count=1, compress='lzw')
             with rasterio.open(output_file, 'w', **profile) as dst:

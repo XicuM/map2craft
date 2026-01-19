@@ -138,13 +138,15 @@ class Map2CraftSConsAdapter:
             custom_layers['Waterways'] = {
                 'layer_path': waterways_conf['layer_path'],
                 'mask_path': river_mask,
-                'level': 15 # Default to max
+                'level': 1 # Default to 1 for 1-bit layers (like Custom Ground Cover)
             }
         
         # 2. Check for generic 'Rivers' key in custom_layers if not already handled
         elif river_mask and 'Rivers' in custom_layers:
             log.info(f"Binding generated river mask to 'Rivers' custom layer: {river_mask}")
             custom_layers['Rivers']['mask_path'] = river_mask
+            if 'level' not in custom_layers['Rivers']:
+                custom_layers['Rivers']['level'] = 1 # Default to 1 for safety
         
         script_content = self.wp.generate_script(
             heightmap, target[0],
@@ -212,9 +214,12 @@ class Map2CraftSConsAdapter:
 
     def biome_map_action(self, target, source, env):
         elev_file = str(source[0])
-        lc_file = str(source[1]) if len(source) > 1 and Path(str(source[1])).exists() else None
+        lc_file = str(source[1]) if str(source[1]) != 'None' else None
+        river_file = str(source[2]) if len(source) > 2 and str(source[2]) != 'None' else None
         is_pre_scaled = env.get('PRE_SCALED', False)
-        self.biome.create_biome_map(elev_file, lc_file, str(target[0]), is_pre_scaled=is_pre_scaled)
+        self.biome.create_biome_map(elev_file, lc_file, str(target[0]), 
+                                    river_mask_file=river_file,
+                                    is_pre_scaled=is_pre_scaled)
         return 0
 
     # ------------------------------------------------------------------
@@ -224,13 +229,14 @@ class Map2CraftSConsAdapter:
         elev = str(source[0])
         water = str(source[1]) if len(source) > 1 else None
         seabed = str(source[2]) if len(source) > 2 else None
+        river = str(source[3]) if len(source) > 3 else None
         
         # Filter out script files passed as dependencies if any
-        if water and water.endswith('.py'): water = None
-        if seabed and seabed.endswith('.py'): seabed = None
+        def clean(s): return None if s and (s.endswith('.py') or s == 'None') else s
             
-        self.viz.visualize_terrain(elev, str(target[0]), water_mask_file=water, 
-                                   seabed_cover_file=seabed)
+        self.viz.visualize_terrain(elev, str(target[0]), water_mask_file=clean(water), 
+                                   seabed_cover_file=clean(seabed),
+                                   river_mask_file=clean(river))
         return None
 
     def biome_viz_action(self, target, source, env):
@@ -255,6 +261,9 @@ class Map2CraftSConsAdapter:
         if steep and steep.endswith('.py'): steep = None
         if seabed and seabed.endswith('.py'): seabed = None
         
+        river = str(source[7]) if len(source) > 7 else None
+        def clean(s): return None if s and (s.endswith('.py') or s == 'None') else s
+
         self.viz.visualize_terrain_types(
             heightmap_file=heightmap,
             output_file=str(target[0]),
@@ -263,7 +272,8 @@ class Map2CraftSConsAdapter:
             biome_map_file=biome,
             road_mask_file=road_mask,
             steep_slopes_mask_file=steep,
-            seabed_cover_file=seabed
+            seabed_cover_file=seabed,
+            river_mask_file=clean(river)
         )
         return None
 
