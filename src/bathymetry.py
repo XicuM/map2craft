@@ -6,16 +6,16 @@ import numpy as np
 import rasterio
 import requests
 from rasterio.warp import reproject, Resampling
+from scipy import ndimage
 
 log = logging.getLogger(__name__)
 
 def download_emodnet_bathymetry(bounds: Tuple[float, float, float, float], 
-                                output_file: str, margin_km: float = 40.0) -> bool:
+                                output_file: str) -> bool:
     ''' Download EMODnet bathymetry data for the specified bounds.
     
         :param tuple bounds: (lon_min, lat_min, lon_max, lat_max)
         :param str output_file: Output GeoTIFF path
-        :param float margin_km: Margin to add around bounds in km
         
         :return: True if successful, False otherwise
     '''
@@ -23,13 +23,12 @@ def download_emodnet_bathymetry(bounds: Tuple[float, float, float, float],
     log.info(f"Downloading EMODnet bathymetry for bounds: {bounds}")
     
     # Calculate expanded bounds
-    deg_per_km = 1.0 / 111.32
-    dlat = margin_km * deg_per_km
-    dlon = margin_km * (deg_per_km / max(0.1, np.cos(np.radians((lat_min + lat_max) / 2.0))))
+    # Add a safe margin to cover offsets (e.g. 0.2 degrees is roughly 20km, covering typical offsets)
+    margin_deg = 0.2
     
     req_bounds = (
-        max(-180.0, lon_min - dlon), max(-90.0, lat_min - dlat),
-        min(180.0, lon_max + dlon), min(90.0, lat_max + dlat)
+        max(-180.0, lon_min - margin_deg), max(-90.0, lat_min - margin_deg),
+        min(180.0, lon_max + margin_deg), min(90.0, lat_max + margin_deg)
     )
     
     base_url = "https://ows.emodnet-bathymetry.eu/wcs"
@@ -62,7 +61,9 @@ def download_emodnet_bathymetry(bounds: Tuple[float, float, float, float],
     return False
 
 def merge_land_and_bathymetry(land_file: str, bathymetry_file: str, 
-                              output_file: str, sea_level: float = 0.0, threshold_m: float = 5.0) -> None:
+                              output_file: str, sea_level: float = 0.0, threshold_m: float = 5.0,
+                              x_offset_m: float = 0.0, y_offset_m: float = 0.0,
+                              smoothness_sigma: float = 2.0) -> None:
     ''' Merge land elevation with underwater bathymetry using raster reproject.
     
         :param str land_file: Path to land elevation GeoTIFF
@@ -70,8 +71,10 @@ def merge_land_and_bathymetry(land_file: str, bathymetry_file: str,
         :param str output_file: Path to save merged output
         :param float sea_level: Sea level in meters
         :param float threshold_m: Land threshold to consider as water (default 1.0)
+        :param float x_offset_m: Offset to apply to bathymetry in X (meters)
+        :param float y_offset_m: Offset to apply to bathymetry in Y (meters)
     '''
-    log.info("Merging land and bathymetry data...")
+    log.info(f"Merging land and bathymetry data (offset: X={x_offset_m}m, Y={y_offset_m}m, smoothness: {smoothness_sigma})...")
     
     with rasterio.open(land_file) as l_src:
         land_data = l_src.read(1).astype(np.float32)
@@ -79,15 +82,53 @@ def merge_land_and_bathymetry(land_file: str, bathymetry_file: str,
         l_trans, l_crs = l_src.transform, l_src.crs
 
     with rasterio.open(bathymetry_file) as b_src:
-        # Resample bathymetry using bilinear for smoothness
+        # Calculate offset in CRS units
+        src_transform = b_src.transform
+        if x_offset_m != 0 or y_offset_m != 0:
+            if b_src.crs.is_geographic:
+                # Convert meters to degrees
+                bounds = b_src.bounds
+                lat_center = (bounds.bottom + bounds.top) / 2.0
+                deg_per_km_lat = 1.0 / 111.32
+                deg_per_km_lon = deg_per_km_lat / max(0.1, np.cos(np.radians(lat_center)))
+                
+                dx = (x_offset_m / 1000.0) * deg_per_km_lon
+                dy = (y_offset_m / 1000.0) * deg_per_km_lat
+            else:
+                # Assume projected CRS is in meters
+                dx = x_offset_m
+                dy = y_offset_m
+                
+            # Apply offset to transform (shift origin)
+            # Affine is: | a b c | (c is x offset)
+            #            | d e f | (f is y offset)
+            #            | 0 0 1 |
+            from rasterio.transform import Affine
+            src_transform = Affine(src_transform.a, src_transform.b, src_transform.c + dx,
+                                   src_transform.d, src_transform.e, src_transform.f + dy)
+            log.info(f" Applied bathymetry offset: X={dx:.6f}, Y={dy:.6f} (CRS units)")
+
+        # Resample bathymetry using Cubic for better quality
         bathy_resampled = np.full(land_data.shape, np.nan, dtype=np.float32)
         
         reproject(
             source=b_src.read(1).astype(np.float32), destination=bathy_resampled,
-            src_transform=b_src.transform, src_crs=b_src.crs,
+            src_transform=src_transform, src_crs=b_src.crs,
             dst_transform=l_trans, dst_crs=l_crs,
-            resampling=Resampling.bilinear, src_nodata=b_src.nodata, dst_nodata=np.nan
+            resampling=Resampling.cubic, src_nodata=b_src.nodata, dst_nodata=np.nan
         )
+        
+        # Apply Gaussian smoothing to reduce "squared" / pixelated look
+        # Sigma=2.0 provides decent smoothing without losing too much detail
+        # We only smooth valid data to avoid dragging NaNs in.
+        # Simple approach: Fill NaNs, smooth, re-apply NaNs? 
+        # Or just smooth everything if we trusted the reprojection.
+        # Better: masked smoothing? 
+        # For now, let's just smooth ignoring NaNs (replace with 0 or similar? No, bad for depth).
+        # We'll rely on the fact that we have a solid block of data usually.
+        # But wait, bathy might have holes.
+        if np.any(np.isfinite(bathy_resampled)) and smoothness_sigma > 0:
+             bathy_resampled = ndimage.gaussian_filter(bathy_resampled, sigma=smoothness_sigma)
 
     # Standardize bathymetry to negative values if median suggests they are depths
     if np.any(finite := np.isfinite(bathy_resampled)) and np.nanmedian(bathy_resampled) > 0:

@@ -79,8 +79,10 @@ BIOME_TO_TERRAIN_MAP = {
     24: 0,  # Deep Ocean -> Water
     45: 1,  # Lukewarm Ocean -> ?
     16: 5,  # Beach -> Sand
-    25: 2,  # Stone Shore -> ?
-    37: 6   # Badlands -> ?
+    25: 2,  # Stone Shore -> Stone
+    37: 6,  # Badlands -> Red Sand
+    6: 12,  # Swamp -> Dirt
+    7: 12   # River -> Dirt
 }
 
 
@@ -123,14 +125,15 @@ LAND_COVER_NAMES = {
 # TERRAIN VISUALIZATION
 # ==========================================
 
-TERRAIN_COLORS_HEX = [
-    '#afafaf',  # 0: Gravel Ocean Floor
-    '#d4c4a0',  # 1: Sandy Ocean Floor
-    '#88be63',  # 2: Grass
-    '#7a7a7a',  # 3: Stone (Steep Slopes)
-    '#e8d4a0',  # 4: Beach Sand
-    '#c86428',  # 5: Badlands
-    '#8b6a47'   # 6: Dirt Path (Roads)
+TERRAIN_COLORS = [
+    (175, 175, 175), # 0: Gravel Ocean Floor
+    (212, 196, 160), # 1: Sandy Ocean Floor
+    (141, 179, 96),  # 2: Grass
+    (122, 122, 122), # 3: Stone (Steep Slopes)
+    (247, 238, 171), # 4: Beach Sand
+    (200, 100, 40),  # 5: Badlands
+    (139, 106, 71),  # 6: Dirt Path (Roads)
+    (125, 92, 52)    # 7: Dirt (River Bed)
 ]
 
 TERRAIN_NAMES_LIST = [
@@ -140,8 +143,20 @@ TERRAIN_NAMES_LIST = [
     'Stone (Steep Slopes)', 
     'Beach Sand', 
     'Badlands', 
-    'Dirt Path (Roads)'
+    'Dirt Path (Roads)',
+    'Dirt (River Bed)'
 ]
+
+
+# ==========================================
+# SEABED COVER
+# ==========================================
+
+SEABED_COLORS = {
+    'sand': (227, 196, 123),
+    'gravel': (128, 128, 128),
+    'rock': (74, 74, 74),
+}
 
 
 # ==========================================
@@ -149,11 +164,11 @@ TERRAIN_NAMES_LIST = [
 # ==========================================
 
 BUILDING_TYPE_STYLES = {
-    'cathedral': ('purple', 'P'),
-    'church': ('blue', 's'),
-    'lighthouse': ('yellow', 'D'),
-    'windmill': ('orange', '^'),
-    'tower': ('green', 'o'),
-    'well': ('cyan', '*'),
-    'building': ('red', 'o')
+    'cathedral': ((128, 0, 128), 'P'),
+    'church': ((0, 0, 255), 's'),
+    'lighthouse': ((255, 255, 0), 'D'),
+    'windmill': ((255, 165, 0), '^'),
+    'tower': ((0, 128, 0), 'o'),
+    'well': ((0, 255, 255), '*'),
+    'building': ((255, 0, 0), 'o')
 }

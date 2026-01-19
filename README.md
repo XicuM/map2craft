@@ -1,23 +1,41 @@
-# Map2Craft (New)
+# Map2Craft
 
 A Python-based toolset for generating realistic Minecraft worlds from real-world geospatial data. This project uses SCons to orchestrate the processing of elevation data, bathymetry, proper land cover mapping, and OpenStreetMap (OSM) features into a WorldPainter-compatible format.
 
+![Project Banner](assets/banner.png)
+
 ## Features
 
-*   **Real-world Terrain**: Downloads and processes SRTM/Copernicus elevation data.
-*   **Bathymetry**: Merges underwater elevation data for realistic oceans.
-*   **Biomes & Land Cover**: Uses ESA WorldCover data to map real-world land types to Minecraft biomes.
-*   **OSM Integration**:
-    *   **Roads**: Fetches and processes road networks, carving them into the terrain.
-    *   **Buildings**: Places logic for buildings (optional support for schematics).
-    *   **Waterways**: Carves rivers and streams based on OSM data.
-*   **WorldPainter Scripting**: Generates a JavaScript file to automate WorldPainter world creation.
-*   **Visualization**: Generates preview images for biomes, terrain, and land cover.
+### 🌍 Real-world Terrain & Bathymetry
+Downloads and processes high-resolution elevation data (SRTM/Copernicus) and reprojects it to meters (EPSG:3857).
+*   **Bathymetry Merging**: Seamlessly blends land elevation with underwater depth data (EMODnet/GEBCO) to create realistic coastlines and ocean floors.
+*   **Zero-Level Handling**: Configurable sea level and masking to prevent shallow coastal artifacts.
+
+### 🌲 Biomes & Land Cover
+Uses **ESA WorldCover** data to automatically map real-world land categories to Minecraft biomes.
+*   **Smart Mapping**: Forests, shrublands, grasslands, and bare areas are translated into appropriate biome IDs.
+*   **Cliff Detection**: Slope-based analysis automatically assigns cliff or stone shore biomes to steep terrain.
+
+### 🛣️ OpenStreetMap Integration
+Fetches vector data from OSM to populate the world with human infrastructure.
+*   **Roads**: Carves road networks (motorways to residential) directly into the terrain with configurable widths.
+*   **Buildings**: Places building footprints. Supports both procedural block placement and **custom schematic** usage (e.g., cathedrals, mills, towers) defined in `config.yaml`.
+*   **Waterways**: Rivers and streams are carved into the land, ensuring hydrologically consistent water features.
+
+### 🎨 WorldPainter Automation
+Generates a comprehensive `build_world.js` script that orchestrates the entire map creation process in WorldPainter.
+*   **Layer Handling**: Automates the application of heightmaps, biome masks, and annotation layers.
+*   **Export Ready**: Produces a `.world` file ready for export to Minecraft.
+
+### 🖼️ Visualization Support
+Includes a dedicated preview pipeline (`scons preview`) to generate debug images for:
+*   **Terrain**: `assets/img/terrain.png`
+*   **Land Cover**: `assets/img/land_cover.png`
 
 ## Prerequisites
 
 *   **Python 3.10+**
-*   **WorldPainter**: Installed and accessible (path configured in `config.yaml`).
+*   **WorldPainter**: Installed and accessible from system's path.
 *   **SCons**: For build automation.
 
 ## Installation
@@ -84,23 +102,17 @@ You can run specific parts of the pipeline:
     ```
     Converts the `.world` file to a Minecraft save directory structure in `output/worlds/`.
 
-### Clean Build
-To clean generated files (be careful, this might delete downloaded data if not configured otherwise):
-
-```bash
-scons -c
-```
-
 ## Project Structure
 
-*   `config.yaml`: Main configuration file.
+*   `config/`: Configuration files (e.g., `default.yaml`).
 *   `SConstruct`: SCons build definition file.
 *   `src/`: Source code modules.
-    *   `data.py`: Elevation downloading.
-    *   `geospatial.py`: Terrain processing and reprojection.
-    *   `biomes.py`: Biome mapping logic.
-    *   `osm.py`: OpenStreetMap data fetching.
-    *   `worldpainter.py`: Interface for generating WorldPainter scripts.
-    *   ...
-*   `data/`: Directory for raw and processed inputs (elevation tiff, etc.).
-*   `output/`: Directory for generated results (heightmaps, masks, world files).
+    *   `data.py`: Elevation and bathymetry downloading.
+    *   `geospatial.py`: Terrain processing, scaling, and reprojection.
+    *   `biomes.py`: Biome mapping and classification.
+    *   `osm.py`, `roads.py`, `buildings.py`, `waterways.py`: OSM data integration.
+    *   `worldpainter.py`: Automation script generation.
+    *   `visualize.py`: Preview image generation logic.
+    *   `amulet_editor.py`: Final world placement and processing.
+*   `build/`: Generated artifacts, downloaded raw data, and intermediate masks (organized by project name).
+*   `assets/`: Static assets like `schematics/` for building placement.

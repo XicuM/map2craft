@@ -12,7 +12,8 @@ from matplotlib.patches import Patch
 from typing import Dict, Tuple, Optional
 from src.constants import (
     BIOME_COLORS, BIOME_NAMES, LAND_COVER_COLORS, LAND_COVER_NAMES,
-    TERRAIN_COLORS_HEX, TERRAIN_NAMES_LIST, BUILDING_TYPE_STYLES
+    TERRAIN_COLORS, TERRAIN_NAMES_LIST, BUILDING_TYPE_STYLES,
+    SEABED_COLORS
 )
 
 log = logging.getLogger(__name__)
@@ -46,13 +47,12 @@ class MapVisualizer:
     def _add_legend(self, handles, title):
         '''Helper to add a legend to the current matplotlib figure.'''
         if handles: plt.legend(
-            handles=handles, loc='center left', bbox_to_anchor=(1, 0.5), 
+            handles=handles, loc='lower left', #bbox_to_anchor=(1, 0.5), 
             title=title, framealpha=0.9
         )
 
-    def _save_plot(self, output_file: str, title: str):
+    def _save_plot(self, output_file: str):
         '''Helper to save the current matplotlib figure.'''
-        plt.title(title)
         plt.axis('off')
         plt.tight_layout()
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
@@ -83,7 +83,7 @@ class MapVisualizer:
             ))
 
         self._add_legend(handles, 'Biome Types')
-        self._save_plot(output_file, f'Biome Map: {self.config["project"]["name"]}')
+        self._save_plot(output_file)
         
         log.info(f"[✓] Biome visualization saved: {output_file}")
 
@@ -115,22 +115,22 @@ class MapVisualizer:
                 handles.append(Patch(color=color, label=name))
 
         self._add_legend(handles, 'Land Cover Classes') 
-        self._save_plot(output_file, f'Land Cover: {self.config["project"]["name"]}')
+        self._save_plot(output_file)
         
         log.info(f"[✓] Land cover visualization saved: {output_file}")
 
 
     def visualize_terrain(self, elevation_file: str, output_file: str, 
                         water_mask_file: Optional[str] = None,
-                        road_mask_file: Optional[str] = None,
-                        biome_map_file: Optional[str] = None) -> None:
+                        biome_map_file: Optional[str] = None,
+                        seabed_cover_file: Optional[str] = None) -> None:
         ''' Create a terrain visualization with optional overlays using matplotlib.
         
             :param str elevation_file: Path to elevation GeoTIFF
             :param str output_file: Path to save visualization PNG
             :param str water_mask_file: Optional path to water mask
-            :param str road_mask_file: Optional path to road mask
             :param str biome_map_file: Optional path to biome map for overlay
+            :param str seabed_cover_file: Optional path to seabed cover RGB mask
         '''
         log.info("Generating terrain visualization...")
         
@@ -148,6 +148,7 @@ class MapVisualizer:
         rgb = np.stack([elev_normalized] * 3, axis=-1)
         
         # Apply water mask if available
+        water_pixels = None
         if water_mask_file and Path(water_mask_file).exists():
             water_mask = np.array(Image.open(water_mask_file))
             if water_mask.shape == elevation.shape:
@@ -179,21 +180,50 @@ class MapVisualizer:
                 else:
                     rgb[water_pixels] = [0.0, 0.39, 0.78]
         
-        # Apply road mask if available
-        if road_mask_file and Path(road_mask_file).exists():
+        # Apply seabed cover visualization if available
+        seabed_labels = []
+        if seabed_cover_file and Path(seabed_cover_file).exists() and water_pixels is not None:
+            log.info(f"Applying seabed cover overlay from {seabed_cover_file}")
             try:
-                if road_mask_file.lower().endswith('.tif'):
-                    with rasterio.open(road_mask_file) as rsrc:
-                        road_mask = rsrc.read(1)
+                seabed_mask = np.array(Image.open(seabed_cover_file))
+                log.info(f"Seabed mask shape: {seabed_mask.shape}, Elevation shape: {elevation.shape}")
+                if seabed_mask.shape[:2] == elevation.shape:
+                    # Seabed mask is RGB: R=sand, G=gravel, B=rock
+                    # Define colors for each type using constants (normalize to 0-1)
+                    sand_color = np.array(self._normalize_color(SEABED_COLORS['sand']))
+                    gravel_color = np.array(self._normalize_color(SEABED_COLORS['gravel']))
+                    rock_color = np.array(self._normalize_color(SEABED_COLORS['rock']))
+                    
+                    # Extract channels (normalize 0-1)
+                    sand_mask = seabed_mask[:, :, 0] > 127
+                    gravel_mask = seabed_mask[:, :, 1] > 127
+                    rock_mask = seabed_mask[:, :, 2] > 127
+                    
+                    # Apply layers in priority order (rock > gravel > sand)
+                    # Only apply to water pixels
+                    sand_pixels = water_pixels & sand_mask & ~gravel_mask & ~rock_mask
+                    gravel_pixels = water_pixels & gravel_mask & ~rock_mask
+                    rock_pixels = water_pixels & rock_mask
+                    
+                    log.info(f"Applying seabed: sand={np.sum(sand_pixels)}, gravel={np.sum(gravel_pixels)}, rock={np.sum(rock_pixels)}")
+                    
+                    rgb[sand_pixels] = sand_color
+                    rgb[gravel_pixels] = gravel_color
+                    rgb[rock_pixels] = rock_color
+                    
+                    # Track which seabed types are present
+                    if np.any(sand_pixels):
+                        seabed_labels.append(('Sand Bottom', sand_color))
+                    if np.any(gravel_pixels):
+                        seabed_labels.append(('Gravel/Stones', gravel_color))
+                    if np.any(rock_pixels):
+                        seabed_labels.append(('Rock/Bedrock', rock_color))
                 else:
-                    road_mask = np.array(Image.open(road_mask_file))
-                
-                if road_mask.shape == elevation.shape:
-                    road_pixels = road_mask > 0
-                    rgb[road_pixels] = [1.0, 0.55, 0.0] # Orange (255, 140, 0) normalized
+                    log.warning(f"Seabed mask shape {seabed_mask.shape[:2]} doesn't match elevation shape {elevation.shape}")
+                        
             except Exception as e:
-                log.warning(f"Could not apply road mask: {e}")
-
+                log.warning(f"Could not apply seabed cover mask: {e}")
+        
         # Plot
         plt.figure(figsize=(16, 12), dpi=150)
         plt.imshow(rgb, interpolation='nearest') # RGB is floats 0-1
@@ -202,13 +232,15 @@ class MapVisualizer:
         handles = [Patch(color=[0.5, 0.5, 0.5], label='Land (Elevation)')]
         
         if water_mask_file and Path(water_mask_file).exists():
-            handles.append(Patch(color=[0.0, 0.39, 0.78], label='Water (Bathymetry)'))
-            
-        if road_mask_file and Path(road_mask_file).exists():
-            handles.append(Patch(color=[1.0, 0.55, 0.0], label='Roads'))
+            if not seabed_labels:  # No seabed overlay
+                handles.append(Patch(color=[0.0, 0.39, 0.78], label='Water (Bathymetry)'))
+            else:
+                # Add seabed types
+                for label, color in seabed_labels:
+                    handles.append(Patch(color=color, label=label))
 
         self._add_legend(handles, 'Terrain Features')
-        self._save_plot(output_file, f'Terrain: {self.config["project"]["name"]}')
+        self._save_plot(output_file)
         
         log.info(f"[✓] Terrain visualization saved: {output_file}")
 
@@ -216,14 +248,16 @@ class MapVisualizer:
         placements_file: str,
         output_file: str,
         heightmap_file: str = None,
-        water_mask_file: str = None
+        water_mask_file: str = None,
+        road_mask_file: str = None
     ) -> None:
-        ''' Create a visualization of building placements overlaid on terrain.
+        ''' Create a visualization of building placements and roads overlaid on terrain.
         
             :param str placements_file: Path to building_placements.json
             :param str output_file: Path to save visualization PNG
             :param str heightmap_file: Optional heightmap for terrain background
             :param str water_mask_file: Optional water mask for context
+            :param str road_mask_file: Optional road mask
         '''
         log.info("Generating building placement visualization...")
         
@@ -232,7 +266,7 @@ class MapVisualizer:
             with open(placements_file, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             placements = data.get('placements', [])
-            building_count = data.get('count', len(placements))
+            building_cnt = data.get('count', len(placements))
         except Exception as e:
             log.error(f"Failed to load building placements: {e}")
             return
@@ -267,6 +301,21 @@ class MapVisualizer:
                         rgb[water_pixels] = [0.7, 0.85, 1.0]
                 except Exception as e:
                     log.warning(f"Could not apply water mask: {e}")
+            
+            # Apply road mask if available
+            if road_mask_file and Path(road_mask_file).exists():
+                try:
+                    if road_mask_file.lower().endswith('.tif'):
+                        with rasterio.open(road_mask_file) as rsrc:
+                            road_mask = rsrc.read(1)
+                    else:
+                        road_mask = np.array(Image.open(road_mask_file))
+                    
+                    if road_mask.shape == heightmap.shape:
+                        road_pixels = road_mask > 0
+                        rgb[road_pixels] = [1.0, 0.55, 0.0] # Orange
+                except Exception as e:
+                    log.warning(f"Could not apply road mask: {e}")
         else:
             # Create blank canvas based on first placement
             height = width = 1000  # Default size
@@ -279,7 +328,7 @@ class MapVisualizer:
         # Define mapping for building types (color, marker)
         # Define mapping for building types (color, marker)
         TYPE_STYLES = BUILDING_TYPE_STYLES
-        DEFAULT_STYLE = ('red', 'o')
+        DEFAULT_STYLE = ((255, 0, 0), 'o')
 
         # Group coordinates by type
         typed_coords = {} # type -> (x_list, y_list)
@@ -302,44 +351,40 @@ class MapVisualizer:
             typed_coords[b_type][1].append(y)
         
         # Plot each group
+        legend_handles = []
         if typed_coords:
             for b_type, (xs, ys) in typed_coords.items():
-                color, marker = TYPE_STYLES.get(b_type, DEFAULT_STYLE)
-                ax.scatter(xs, ys, c=color, marker=marker, s=40, alpha=0.9, 
+                color_raw, marker = TYPE_STYLES.get(b_type, DEFAULT_STYLE)
+                color = self._normalize_color(color_raw)
+                handle = ax.scatter(xs, ys, c=[color], marker=marker, s=40, alpha=0.9, 
                           label=f'{b_type.capitalize()} ({len(xs)})', 
                           edgecolors='black', linewidths=0.5)
-            
-            # Add legend
-            ax.legend(loc='upper right', fontsize=10, framealpha=0.9, title="Building Types")
-            log.info(f"Plotted buildings for types: {', '.join(typed_coords.keys())}")
+                legend_handles.append(handle)
         
-        else: log.warning("No valid building coordinates to plot")
-        
-        # Title and formatting
-        ax.set_title(
-            f'Building Placements: {self.config["project"]["name"]} ({building_count} total)', 
-            fontsize=14, fontweight='bold'
-        )
-        ax.axis('off')
-        
-        # Save
-        plt.tight_layout()
-        plt.savefig(output_file, bbox_inches='tight', dpi=150)
-        plt.close()
-        
-        log.info(f"[✓] Building placement visualization saved: {output_file}")
+        # Add road handle if present
+        if road_mask_file and Path(road_mask_file).exists():
+             legend_handles.append(Patch(color=[1.0, 0.55, 0.0], label='Roads'))
 
-
+        if legend_handles:
+            ax.legend(handles=legend_handles, loc='upper right', fontsize=10, framealpha=0.9, title="Map Artifacts")
+            log.info(f"Plotted {len(legend_handles)} legend items")
+        else:
+            log.warning("No valid building or road coordinates to plot")
+        
+        self._save_plot(output_file)
+        
+        log.info(f"[✓] Artifact visualization saved: {output_file}")
 
     def visualize_terrain_types(
         self,
         heightmap_file: str,
         output_file: str,
         metadata_file: str,
-        water_mask_file: str = None,
-        biome_map_file: str = None,
-        road_mask_file: str = None,
-        steep_slopes_mask_file: str = None
+        water_mask_file: Optional[str] = None,
+        biome_map_file: Optional[str] = None,
+        road_mask_file: Optional[str] = None,
+        steep_slopes_mask_file: Optional[str] = None,
+        seabed_cover_file: Optional[str] = None
     ) -> None:
         ''' Create terrain type classification visualization.
         
@@ -350,11 +395,12 @@ class MapVisualizer:
             :param str biome_map_file: Optional path to biome map
             :param str road_mask_file: Optional path to road mask
             :param str steep_slopes_mask_file: Optional path to steep slopes mask
+            :param str seabed_cover_file: Optional path to seabed cover RGB mask
         '''
         log.info("Generating terrain type visualization...")
 
         # Terrain definitions
-        TERRAIN_COLORS = TERRAIN_COLORS_HEX
+        TERRAIN_COLORS_RGB = TERRAIN_COLORS
         TERRAIN_NAMES = TERRAIN_NAMES_LIST
 
         # Helper to load mask
@@ -382,9 +428,21 @@ class MapVisualizer:
         road_mask = _load_mask(road_mask_file)
         biome_map = _load_mask(biome_map_file)
         steep_slopes_mask = _load_mask(steep_slopes_mask_file)
+        seabed_mask = None
+        if seabed_cover_file and Path(seabed_cover_file).exists():
+            try:
+                seabed_mask = np.array(Image.open(seabed_cover_file))
+            except Exception as e:
+                log.warning(f"Could not load seabed mask: {e}")
         
-        # Get sea level
+        # Get sea level and slope thresholds
         sea_level_value = 0
+        cliff_threshold = self.config.get('terrain', {}).get('cliff_threshold_degrees', 25.0)
+        max_slope_deg = self.config.get('masks', {}).get('slope_max_degrees', 80.0)
+        # Normalize cliff threshold to 0-255 scale used in slope_mask
+        slope_viz_threshold = int((cliff_threshold / max_slope_deg) * 255)
+        log.info(f" Using slope threshold for visualization: {cliff_threshold}° -> {slope_viz_threshold}/255")
+        
         try:
             with open(metadata_file, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
@@ -402,12 +460,32 @@ class MapVisualizer:
         # Base classification (Land vs Ocean)
         if water_mask is not None:
             is_water = water_mask > 127
-            depth_delta = 5000
-            deep_thresh = max(0, sea_level_value - depth_delta)
             
-            terrain[is_water & (heightmap < deep_thresh)] = 0  # Gravel
-            terrain[is_water & (heightmap >= deep_thresh)] = 1  # Sand
-            terrain[~is_water] = 2  # Grass
+            # Default classification
+            terrain[is_water] = 1 # Default to Sandy Ocean Floor
+            terrain[~is_water] = 2 # Grass
+            
+            # Use biome map to distinguish inland water (Dirt bottom)
+            if biome_map is not None:
+                # 6 = Swamp, 7 = River
+                is_inland = (biome_map == 6) | (biome_map == 7)
+                terrain[is_water & is_inland] = 7 # Dirt (River Bed)
+            
+            # Apply seabed classification if available
+            if seabed_mask is not None and seabed_mask.shape[:2] == terrain.shape:
+                # Seabed mask channels: R=sand, G=gravel, B=rock
+                gravel_pixels = (seabed_mask[:, :, 1] > 127) & is_water
+                rock_pixels = (seabed_mask[:, :, 2] > 127) & is_water
+                
+                # Apply: default is sand (1), so just apply gravel (0) and rock (3)
+                # Rock overrides gravel if both present (though they shouldn't overlap much)
+                terrain[gravel_pixels] = 0 # Gravel Ocean Floor
+                terrain[rock_pixels] = 3   # Stone (Steep Slopes) / Rock
+            else:
+                # Fallback depth-based classification
+                depth_delta = 5000
+                deep_thresh = max(0, sea_level_value - depth_delta)
+                terrain[is_water & (heightmap < deep_thresh)] = 0  # Gravel
         else:
             terrain[:] = 2
 
@@ -419,13 +497,13 @@ class MapVisualizer:
         # Stone shore from biome map is valid too, combine it with explicit steep slopes
         stone_shore_mask = (biome_map == 25) if biome_map is not None else None
 
-        # Overlays
+        # Overlays: Beaches first, then cliffs/stone (to ensure steep coastal areas win), then features
         for mask, tid, thresh in [
-            (stone_shore_mask, 3, 0), # Stone shore from biomes (binary)
-            (steep_slopes_mask, 3, 150), # Explicit slope gradient (needs threshold ~35 deg)
-            (beach_mask, 4, 0),
-            (badlands_mask, 5, 0),
-            (road_mask, 6, 0)
+            (beach_mask, 4, 0),          # Beach Sand (Low priority)
+            (stone_shore_mask, 3, 0),    # Stone shore from biomes
+            (steep_slopes_mask, 3, slope_viz_threshold), # Explicit slope gradient (Stone)
+            (badlands_mask, 5, 0),       # Badlands
+            (road_mask, 6, 0)            # Roads (High priority)
         ]:
             if mask is not None:
                 # Resize if necessary
@@ -443,17 +521,13 @@ class MapVisualizer:
 
         # Plot
         fig, ax = plt.subplots(figsize=(16, 12), dpi=150)
-        im = ax.imshow(terrain, cmap=ListedColormap(TERRAIN_COLORS), vmin=0, vmax=6, interpolation='nearest')
+        colors_norm = [self._normalize_color(c) for c in TERRAIN_COLORS_RGB]
+        im = ax.imshow(terrain, cmap=ListedColormap(colors_norm), vmin=0, vmax=len(colors_norm)-1, interpolation='nearest')
         
         # Legend
-        handles = [Patch(color=TERRAIN_COLORS[i], label=TERRAIN_NAMES[i]) for i in range(len(TERRAIN_COLORS))]
+        handles = [Patch(color=colors_norm[i], label=TERRAIN_NAMES[i]) for i in range(len(colors_norm))]
         self._add_legend(handles, 'Terrain Types')
-        ax.set_title(f'Terrain Types: {self.config["project"]["name"]}')
-        ax.axis('off')
-
-        plt.tight_layout()
-        plt.savefig(output_file, bbox_inches='tight', dpi=150)
-        plt.close()
+        self._save_plot(output_file)
         log.info(f"[✓] Terrain type visualization saved: {output_file}")
 
 

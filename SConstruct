@@ -39,7 +39,9 @@ v_meta = Value(config['metadata'])
 v_roads = Value(config['roads'])
 v_bldgs = Value(config['buildings'])
 v_water = Value(config['waterways'])
+v_seabed = Value(config['seabed'])
 v_project = Value(config['project'])
+v_terrain = Value(config['terrain'])
 
 
 # Feature Flags
@@ -48,6 +50,7 @@ has_roads = config['roads']['enabled']
 has_buildings = config['buildings']['enabled']
 has_waterways = config['waterways']['enabled']
 has_bathy = config['bathymetry']['enabled']
+has_seabed = config.get('seabed', {}).get('enabled', False) and has_bathy
 
 # Component Initialization
 comp = {
@@ -89,8 +92,7 @@ if has_bathy:
     elev_with_bathy = str(data_dir / "elevation_merged_scaled.tif")
     
     def dl_bathy(target, source, env):
-        margin = config.get('bathymetry', {}).get('margin_km', 40)
-        if not bathymetry.download_emodnet_bathymetry(tuple(config['geospatial']['bounds']), str(target[0]), margin):
+        if not bathymetry.download_emodnet_bathymetry(tuple(config['geospatial']['bounds']), str(target[0])):
             print("Warning: Bathymetry failed, using land-only.")
         return None
 
@@ -110,10 +112,14 @@ if has_bathy:
     # We reduce threshold to 0.1m to targeting only strict 0-value placeholders, preserving beaches.
     merge_threshold = 0.01 * scale_factor
     
-    env.Command(elev_with_bathy, [tgt_elev_scaled, tgt_bathy_scaled, "src/bathymetry.py"], 
+    env.Command(elev_with_bathy, [tgt_elev_scaled, tgt_bathy_scaled, v_bathy, "src/bathymetry.py"], 
                 lambda target, source, env: bathymetry.merge_land_and_bathymetry(
                     str(source[0]), str(source[1]), str(target[0]), 
-                    sea_level=0.0, threshold_m=merge_threshold))
+                    sea_level=0.0, threshold_m=merge_threshold,
+                    x_offset_m=float(config.get('bathymetry', {}).get('offset_lon_m', 0.0)),
+                    y_offset_m=float(config.get('bathymetry', {}).get('offset_lat_m', 0.0)),
+                    smoothness_sigma=float(config.get('bathymetry', {}).get('smoothness_sigma', 2.0))))
+
                     
     elev_source = elev_with_bathy
     
@@ -137,16 +143,19 @@ if lc_file:
 heightmap = str(build_dir / "heightmap.png")
 water_mask = str(masks_dir / "water_mask.png")
 slope_mask = str(masks_dir / "slope_mask.png")
+seabed_cover_mask = str(masks_dir / "seabed_cover.png") if has_seabed else None
 biome_map = str(build_dir / "biome_map.tif")
 meta_json = str(build_dir / "metadata.json")
 
-env.Command(heightmap, [elev_proc, elev_raw, v_geo, v_mc, "src/geospatial.py"], adapter.heightmap_action, PRE_SCALED=env.get('PRE_SCALED', False))
-env.Command(water_mask, [elev_proc, v_masks, "src/masks.py"], comp['mask'].water_mask_action, PRE_SCALED=env.get('PRE_SCALED', False))
-env.Command(slope_mask, [elev_proc, v_masks, "src/masks.py"], comp['mask'].slope_mask_action, PRE_SCALED=env.get('PRE_SCALED', False))
-env.Command(meta_json, [elev_proc, v_meta, v_mc, v_project, "src/metadata.py"], comp['meta'].metadata_action, PRE_SCALED=env.get('PRE_SCALED', False))
+env.Command(heightmap, [elev_proc, elev_raw, v_geo, v_mc, v_terrain, "src/geospatial.py"], adapter.heightmap_action, PRE_SCALED=env.get('PRE_SCALED', False))
+env.Command(water_mask, [elev_proc, v_masks, v_terrain, "src/masks.py"], comp['mask'].water_mask_action, PRE_SCALED=env.get('PRE_SCALED', False))
+env.Command(slope_mask, [elev_proc, v_masks, v_terrain, "src/masks.py"], comp['mask'].slope_mask_action, PRE_SCALED=env.get('PRE_SCALED', False))
+if has_seabed:
+    env.Command(seabed_cover_mask, [elev_proc, v_seabed, v_masks, v_terrain, "src/masks.py"], comp['mask'].seabed_cover_mask_action, PRE_SCALED=env.get('PRE_SCALED', False))
+env.Command(meta_json, [elev_proc, v_meta, v_mc, v_project, v_terrain, "src/metadata.py"], comp['meta'].metadata_action, PRE_SCALED=env.get('PRE_SCALED', False))
 
 
-biome_srcs = [elev_proc] + ([lc_file] if lc_file else []) + [v_biomes, v_geo, "src/biomes.py", "src/geometry.py"]
+biome_srcs = [elev_proc] + ([lc_file] if lc_file else []) + [v_biomes, v_geo, v_terrain, "src/biomes.py", "src/geometry.py"]
 env.Command(biome_map, biome_srcs, adapter.biome_map_action, PRE_SCALED=env.get('PRE_SCALED', False))
 
 # 4. OSM Extensions
@@ -175,6 +184,8 @@ wp_srcs = [
     (road_mask or "None"), 
     (biome_map if has_biomes else "None"), 
     (bldgs_out or "None"),
+    (seabed_cover_mask if has_seabed else "None"),
+    (river_mask if has_waterways else "None"),
     v_mc, v_project,
     "src/worldpainter.py"
 ]
@@ -194,32 +205,47 @@ env.Command(install_ldat, [export_ldat, amulet_sentinel], comp['inst'].install_a
 
 # 6. Visualizations
 preview_dir = build_dir / "preview"
-v_terrain = str(preview_dir / "terrain.png")
+v_terrain = str(preview_dir / "heightmap.png")  # Renamed from heightmap_preview.png
 v_biome = str(preview_dir / "biome.png")
-v_types = str(preview_dir / "terrain_types.png")
+v_types = str(preview_dir / "terrain.png")      
 v_lc = str(preview_dir / "land_cover.png")
 
-env.Command(v_terrain, [heightmap, water_mask, "src/visualize.py"], adapter.terrain_viz_action)
+# Build terrain visualization sources dynamically - NO seabed for heightmap (use bathymetry gradient)
+terrain_viz_sources = [heightmap, water_mask, "src/visualize.py"]
+# Note: Seabed mask intentionally omitted here to show bathymetry depth gradient instead
+
+env.Command(v_terrain, terrain_viz_sources, adapter.terrain_viz_action)
 
 viz_targets = [v_terrain]
 if has_biomes:
     env.Command(v_biome, [biome_map, "src/visualize.py"], adapter.biome_viz_action)
-    env.Command(v_types, [heightmap, water_mask, biome_map, (road_mask or "None"), meta_json, slope_mask, "src/visualize.py", "src/biomes.py"], adapter.terrain_types_viz_action)
+    
+    # Build terrain types sources dynamically
+    types_sources = [heightmap, water_mask, biome_map, (road_mask or "None"), meta_json, slope_mask]
+    if seabed_cover_mask:
+        types_sources.append(seabed_cover_mask)
+    types_sources.extend(["src/visualize.py", "src/biomes.py"])
+    
+    env.Command(v_types, types_sources, adapter.terrain_types_viz_action)
     viz_targets.extend([v_biome, v_types])
 if lc_file:
     env.Command(v_lc, [lc_file, "src/visualize.py"], adapter.land_cover_viz_action)
     viz_targets.append(v_lc)
-if has_buildings and bldgs_out:
-    v_buildings = str(preview_dir / "buildings.png")
-    env.Command(v_buildings, [bldgs_out, heightmap, water_mask, "src/visualize.py", v_bldgs], adapter.building_viz_action)
-    viz_targets.append(v_buildings)
+if (has_buildings and bldgs_out) or (has_roads and road_mask):
+    v_artifacts = str(preview_dir / "artifacts.png")
+    artifacts_srcs = [(bldgs_out or "None"), heightmap, (water_mask or "None"), (road_mask or "None"), "src/visualize.py"]
+    env.Command(v_artifacts, artifacts_srcs, adapter.artifacts_viz_action)
+    viz_targets.append(v_artifacts)
 
 # Targets & Aliases
 Default(amulet_sentinel)
 env.Alias('elevation', elev_raw)
 env.Alias('process', elev_proc)
 env.Alias('heightmap', heightmap)
-env.Alias('masks', [water_mask, slope_mask])
+mask_list = [water_mask, slope_mask]
+if has_seabed:
+    mask_list.append(seabed_cover_mask)
+env.Alias('masks', mask_list)
 env.Alias('biomes', biome_map)
 env.Alias('metadata', meta_json)
 env.Alias('world', wp_world)

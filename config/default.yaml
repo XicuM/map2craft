@@ -13,7 +13,9 @@ geospatial:
 # Bathymetry (underwater elevation)
 bathymetry:
   enabled: true  # Set to true to download and merge underwater elevation
-  margin_km: 0   # Margin around bounds for bathymetry download
+  offset_lat_m: 100
+  offset_lon_m: 45
+  smoothness_sigma: 2.0
 
 minecraft:
   version: "1.20.5"
@@ -26,18 +28,34 @@ minecraft:
     vertical: 10
     auto_fit: false
 
+# Terrain Classification & Masking
+terrain:
+  sea_level_m: 0.0
+  cliff_threshold_degrees: 24.75  # Slope threshold for cliffs/stone shores
+  lukewarm_ocean_depth_m: -35.0   # Shallow warm water (Mediterranean)
+  deep_ocean_depth_m: -90.0       # Deep ocean threshold
+  water_mask_threshold_m: 1.0     # Elevation threshold to submerge artifacts
+
+# Seabed terrain cover (underwater terrain classification)
+seabed:
+  enabled: true
+  thresholds:
+    gravel_min_degrees: 1.4   # Shelf break and transition zones
+    rock_min_degrees: 5.0    # Continental slopes, seamounts, canyon walls
+
 # Biomes
 biomes:
   enabled: true
-  sea_level_meters: 0.0
-  cliff_threshold: 25.0  # Slope threshold for cliffs/stone shores (degrees)
-  lukewarm_ocean_depth_m: -35.0  # Shallow warm water (Mediterranean)
-  deep_ocean_depth_m: -90.0      # Deep ocean threshold
+  inland_water:
+    erosion_kernel_size: 4
+  beaches:
+    enabled: true
+    max_slope_degrees: 5.0  # Maximum slope to be considered a sandy beach
+    max_penetration_m: 60.0 # Maximum horizontal distance from water
 
 # Masks
 masks:
-  water_sea_level_m: 1.0  # Raised to submerge shallow coastal artifacts
-  slope_max_degrees: 60.0
+  slope_max_degrees: 75.0
 
 # Metadata
 metadata:
@@ -53,7 +71,7 @@ roads:
     trunk: 7
     primary: 4
     secondary: 3
-    tertiary: 3
+    # tertiary: 3
     # residential: 3
     # service: 2
 
@@ -80,3 +98,5 @@ waterways:
   enabled: true
   stream_width_blocks: 2
   river_width_blocks: 4
+  layer_path: "assets/layers/streams.layer"
+

@@ -13,6 +13,168 @@ from typing import Dict, List, Tuple
 
 log = logging.getLogger(__name__)
 
+# Debug Amulet Version/File
+try:
+    log.info(f"Amulet package file: {amulet.__file__}")
+    if hasattr(amulet, '__version__'):
+        log.info(f"Amulet package version: {amulet.__version__}")
+except:
+    pass
+
+# Robust load_level import for Amulet v2
+try:
+    # Amulet v2 seems to use get_level in amulet.level package (which needs to be installed separately as amulet-level)
+    from amulet.level import get_level as load_level
+except ImportError:
+    try:
+        # Fallback for v1 or other structure
+        load_level = amulet.load_level
+    except AttributeError:
+        log.error("Could not find 'get_level' or 'load_level'. Ensure 'amulet-level' is installed for Amulet v2.")
+        load_level = None
+
+# Legacy Block ID Mapping (Minimal Set for standard buildings)
+LEGACY_BLOCK_MAP = {
+    0: "minecraft:air",
+    1: "minecraft:stone",
+    2: "minecraft:grass_block",
+    3: "minecraft:dirt",
+    4: "minecraft:cobblestone",
+    5: "minecraft:oak_planks",
+    6: "minecraft:oak_sapling",
+    7: "minecraft:bedrock",
+    8: "minecraft:water",
+    9: "minecraft:water",
+    10: "minecraft:lava",
+    11: "minecraft:lava",
+    12: "minecraft:sand",
+    13: "minecraft:gravel",
+    14: "minecraft:gold_ore",
+    15: "minecraft:iron_ore",
+    16: "minecraft:coal_ore",
+    17: "minecraft:oak_log",
+    18: "minecraft:oak_leaves",
+    19: "minecraft:sponge",
+    20: "minecraft:glass",
+    35: "minecraft:white_wool",
+    41: "minecraft:gold_block",
+    42: "minecraft:iron_block",
+    43: "minecraft:smooth_stone_slab", # Double slab
+    44: "minecraft:smooth_stone_slab",
+    45: "minecraft:bricks",
+    48: "minecraft:mossy_cobblestone",
+    49: "minecraft:obsidian",
+    50: "minecraft:torch",
+    53: "minecraft:oak_stairs",
+    54: "minecraft:chest",
+    58: "minecraft:crafting_table",
+    60: "minecraft:farmland",
+    61: "minecraft:furnace",
+    63: "minecraft:oak_sign", # Standing sign
+    64: "minecraft:oak_door",
+    65: "minecraft:ladder",
+    66: "minecraft:rail",
+    67: "minecraft:cobblestone_stairs",
+    68: "minecraft:oak_wall_sign",
+    85: "minecraft:oak_fence",
+    89: "minecraft:glowstone",
+    98: "minecraft:stone_bricks",
+    101: "minecraft:iron_bars",
+    102: "minecraft:glass_pane",
+    109: "minecraft:stone_bricks",
+    126: "minecraft:oak_slab",
+    # Add more as discovered
+}
+
+class LegacySchematicLoader:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.width = 0
+        self.height = 0
+        self.length = 0
+        self.blocks = None
+        self.data = None
+        self._load()
+
+    def _load(self):
+        try:
+            nbt_data = amulet.nbt.read_nbt(str(self.path))
+            # read_nbt returns (NBTFile, format_wrapper)
+            nbt = nbt_data[0]
+            
+            # Extract dimensions
+            # NBTFile might act as CompoundTag or have .value
+            if hasattr(nbt, 'value'):
+                nbt = nbt.value
+
+            self.width = int(nbt["Width"].value)
+            self.height = int(nbt["Height"].value)
+            self.length = int(nbt["Length"].value)
+            
+            # Extract block data (byte arrays)
+            self.blocks = nbt["Blocks"].value
+            self.data = nbt["Data"].value
+            
+            log.info(f"Loaded legacy schematic: {self.width}x{self.height}x{self.length}")
+            
+        except Exception as e:
+            log.error(f"Failed to parse schematic NBT: {e}")
+            raise e
+
+    def paste(self, level, ox, oy, oz):
+        try:
+            from amulet.core.block import Block
+        except ImportError:
+            log.error("Could not import amulet.core.block.Block")
+            return
+
+        dimension = "minecraft:overworld"
+        
+        count = 0
+        total_blocks = self.width * self.height * self.length
+        
+        # MCEdit Schematic order: Y, Z, X
+        for y in range(self.height):
+            for z in range(self.length):
+                for x in range(self.width):
+                    index = (y * self.length + z) * self.width + x
+                    
+                    block_id = self.blocks[index]
+                    # handle signed byte if needed (python ints are usually fine)
+                    if block_id < 0: block_id += 256
+                    
+                    block_data = self.data[index]
+                    
+                    if block_id == 0: continue # Skip air for efficiency? Or paste it?
+                                             # Usually strictly cleaner to skip air to avoid overwriting terrain unless intended.
+                    
+                    # types > 255 not supported in standard .schematic
+                    
+                    # Translation
+                    block_key = LEGACY_BLOCK_MAP.get(block_id, "minecraft:stone") # Default to stone if unknown? Or pink wool?
+                    if block_id not in LEGACY_BLOCK_MAP:
+                        # Log once per ID?
+                        pass
+
+                    # Construct properties (minimal)
+                    props = {}
+                    # Handling rotation/data is complex. For now, paste raw base blocks.
+                    
+                    # Create Block
+                    # Namespace, BaseName, Properties
+                    ns, name = block_key.split(":")
+                    block = Block(ns, name, props)
+                    
+                    # Set Block
+                    try:
+                        level.set_block(ox + x, oy + y, oz + z, dimension, block)
+                        count += 1
+                    except Exception as e:
+                        # log.warning(f"Failed set_block: {e}")
+                        pass
+                        
+        log.info(f"Pasted {count} blocks from schematic.")
+
 class AmuletEditor:
     def __init__(self, config={}):
         self.config = config    
@@ -70,49 +232,8 @@ class AmuletEditor:
             
         except Exception as e:
             log.warning(f"Failed to place sign at {x},{y},{z}: {e}")
-        ''' Place an oak sign with text. '''
-        try:
-            # Block: minecraft:oak_sign[rotation=0] (standing sign)
-            # Find a safe spot? Ideally just place it in front or inside?
-            # For now, let's place it at the specific coord (which might conflict with the building center)
-            # Maybe place it at y+1? Or rely on the schematic having an air block?
-            # Actually, standard schematic placement is usually centered or corner.
-            # Let's try to place it at the schematic origin for now.
-            
-            # Create block
-            # Note: Amulet v2 might use Block directly, check API
-            # Since we are using installed Amulet v2 (implied by previous steps finding only Python 3.12/v2)
-            # Block format: "namespace:block_name[properties]"
-            
-            # Using universal block format if possible
-            block = amulet.Block("minecraft", "oak_sign", {"rotation": "0"})
-            
-            # Create NBT for text
-            # Text1: '{"text":"..."}'
-            text_json = json.dumps({"text": text})
-            nbt = amulet_nbt.NBTFile(
-                amulet_nbt.TAG_Compound({
-                    "id": amulet_nbt.TAG_String("minecraft:sign"),
-                    "x": amulet_nbt.TAG_Int(x),
-                    "y": amulet_nbt.TAG_Int(y),
-                    "z": amulet_nbt.TAG_Int(z),
-                    "Text1": amulet_nbt.TAG_String(text_json),
-                    "Text2": amulet_nbt.TAG_String(""),
-                    "Text3": amulet_nbt.TAG_String(""),
-                    "Text4": amulet_nbt.TAG_String("")
-                })
-            )
-            
-            level.set_version_block(x, y, z, "minecraft:overworld", (GetVersionNumber(), block), nbt)
-            # Note: set_version_block usage depends on exact Amulet version.
-            # Safe bet for Amulet v2: level.set_block(x,y,z, dimension, block) and separate set_block_entity?
-            # Or use put_block?
-            
-            # Let's use lower level API if possible or just standard set_block
-            level.set_block(x, y, z, "minecraft:overworld", block)
-            
-        except Exception as e:
-            log.warning(f"Failed to place sign at {x},{y},{z}: {e}")
+
+
 
     def place_buildings(self, world_path: str, placements_path: str, height_meta_path: str) -> None:
         ''' Place buildings into the world using Amulet.
@@ -172,8 +293,12 @@ class AmuletEditor:
                     world_path = entry
                     break
 
+        if load_level is None:
+             log.error("Amulet load_level is not available. Cannot place buildings.")
+             return
+
         # Load level
-        try: level = amulet.load_level(world_path)
+        try: level = load_level(world_path)
         except Exception as e:
             log.error(f"Failed to load world at {world_path}: {e}")
             return
@@ -182,8 +307,8 @@ class AmuletEditor:
         dimension = "minecraft:overworld"
         
         for p in placements:
-            props = p.get('properties', {})
-            b_type = props.get('building', 'building_type')
+            # Building type is at the top level in the generated YAML
+            b_type = p.get('type')
             
             schematic_filename = self.building_map.get(b_type)
             if not schematic_filename:
@@ -195,13 +320,7 @@ class AmuletEditor:
                 log.warning(f"Schematic file not found: {schematic_path}")
                 continue
 
-            # Load schematic
-            try: schematic = amulet.load_level(schematic_path)
-            except Exception as e:
-                log.error(f"Failed to load schematic {schematic_path}: {e}")
-                continue
-
-            # Calculate coordinates
+            # Calculate coordinates first
             # YAML x -> X (East), YAML y -> Z (South)
             x = int(p['x'])
             z = int(p['y'])
@@ -212,28 +331,50 @@ class AmuletEditor:
             m_range = max_meters - min_meters
             if m_range == 0: m_range = 1
             y = int(min_y + (elev - min_meters) / m_range * y_range)
-            
+
             log.info(f"Placing {b_type} ({schematic_filename}) at ({x}, {y}, {z})")
+
+            # Load schematic
+            schematic = None
+            try:
+                schematic = load_level(str(schematic_path))
+            except Exception as e:
+                log.warning(f"Standard load_level failed for {schematic_path}: {e}")
+                
+                # Fallback for .schematic files
+                if schematic_path.suffix == '.schematic':
+                    log.info(f"Attempting legacy load for {schematic_path}...")
+                    try:
+                        loader = LegacySchematicLoader(schematic_path)
+                        loader.paste(level, x, y, z)
+                        placed_count += 1
+                        
+                        # Handle sign placement (simplified for legacy)
+                        if 'name' in p:
+                            self.place_sign(level, x+1, y+1, z, p['name'])
+                            
+                        continue # Skip standard paste
+                    except Exception as le:
+                        log.error(f"Legacy load also failed: {le}")
+                        continue
+                else:
+                    continue
             
-            # Paste schematic
+            # Paste standard schematic (Amulet supported formats)
             try:
                 level.paste(schematic, dimension, (x, y, z))
                 placed_count += 1
                 
                 # Place sign if name exists
                 if 'name' in p:
-                    # Place sign at (x+1, y, z+1) relative to schematic origin?
-                    # We don't know where the 'door' is. 
-                    # Let's place it at x, y+1, z (inside the building? or floating?)
-                    # Safest is probably x+1, z+1 at y+2?
-                    # Let's try putting it at y+1 at the corner.
                     self.place_sign(level, x+1, y+1, z, p['name'])
                     
             except Exception as e:
                 log.error(f"Failed to paste building {b_type} at ({x}, {y}, {z}): {e}")
             
             # Close schematic
-            schematic.close()
+            if schematic:
+                schematic.close()
 
         # Save and close
         if placed_count > 0:

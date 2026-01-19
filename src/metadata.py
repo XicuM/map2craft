@@ -97,7 +97,7 @@ class MetadataGenerator:
                             "height_pixels": height,
                             "bit_depth": 16
                         },
-                        "sea_level_meters": 0
+                        "sea_level_meters": self.config.get('terrain', {}).get('sea_level_m', 0)
                     },
                     "minecraft": {
                         "scale": {

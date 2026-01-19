@@ -30,8 +30,7 @@ class RoadsProcessor:
         log.info("Generating road mask...")
         
         # Load roads
-        with open(roads_geojson, 'r') as f:
-            roads_data = json.load(f)
+        with open(roads_geojson, 'r') as f: roads_data = json.load(f)
         
         # Get elevation dimensions and transform
         with rasterio.open(elevation_file) as src:
@@ -118,4 +117,4 @@ class RoadsProcessor:
             self.config['roads']['road_widths'], 
             self.config['minecraft']['scale']['horizontal']
         )
-        return 0
+        return None
