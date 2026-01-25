@@ -1,8 +1,8 @@
+![Project Banner](assets/banner.png)
+
 # Map2Craft
 
 A Python-based toolset for generating realistic Minecraft worlds from real-world geospatial data. This project uses SCons to orchestrate the processing of elevation data, bathymetry, proper land cover mapping, and OpenStreetMap (OSM) features into a WorldPainter-compatible format.
-
-![Project Banner](assets/banner.png)
 
 ## Features
 
