@@ -21,8 +21,6 @@ build/
 # Geo data artifacts (if any outside build)
 *.tif
 *.geojson
-*.png
-!src/**/*.png
 
 # Config
 config/*.yaml
