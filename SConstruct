@@ -13,7 +13,7 @@ import yaml
 sys.path.append(str(Path.cwd()))
 from src import (
     data, geospatial, worldpainter, landcover, masks, metadata, 
-    biomes, osm, roads, buildings, waterways, visualize, bathymetry, install, amulet_editor,
+    biomes, osm, roads, buildings, waterways, visualize, bathymetry, install,
     scons_adapters
 )
 
@@ -66,7 +66,6 @@ comp = {
     'meta': metadata.MetadataGenerator(config),
     'wp': worldpainter.WorldPainterInterface(config),
     'viz': visualize.MapVisualizer(config),
-    'amulet': amulet_editor.AmuletEditor(config),
     'inst': install.WorldInstaller(config)
 }
 adapter = scons_adapters.Map2CraftSConsAdapter(config)
@@ -198,13 +197,13 @@ env.Command([wp_world, wp_script], wp_srcs, adapter.world_action)
 export_ldat = str(build_dir / "export" / project_name / "level.dat")
 env.Command(export_ldat, [wp_world], adapter.export_action)
 
-amulet_sentinel = str(build_dir / "amulet_placed.stamp")
-amulet_srcs = [export_ldat, bldgs_out, meta_json, "src/amulet_editor.py"]
-env.Command(amulet_sentinel, amulet_srcs, adapter.amulet_place_action)
-env.Alias('amulet-place', amulet_sentinel)
+anvil_sentinel = str(build_dir / "anvil_placed.stamp")
+anvil_srcs = [export_ldat, bldgs_out, meta_json, "src/anvil_place.py"]
+env.Command(anvil_sentinel, anvil_srcs, adapter.anvil_place_action)
+env.Alias('anvil-place', anvil_sentinel)
 
 install_ldat = str(Path(comp['inst'].get_saves_dir()) / project_name / "level.dat")
-env.Command(install_ldat, [export_ldat, amulet_sentinel], comp['inst'].install_action)
+env.Command(install_ldat, [export_ldat, anvil_sentinel], comp['inst'].install_action)
 
 # 6. Visualizations
 preview_dir = build_dir / "preview"
@@ -251,7 +250,7 @@ if (has_buildings and bldgs_out) or (has_roads and road_mask):
     viz_targets.append(v_artifacts)
 
 # Targets & Aliases
-Default(amulet_sentinel)
+Default(anvil_sentinel)
 env.Alias('elevation', elev_raw)
 env.Alias('process', elev_proc)
 env.Alias('heightmap', heightmap)

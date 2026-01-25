@@ -59,6 +59,13 @@ class BuildingsProcessor:
         with open(buildings_geojson, 'r') as f: buildings_data = json.load(f)
         with open(metadata_file, 'r') as f: metadata = json.load(f)
         
+        # Parse building type config for unnamed inclusion
+        # Default to True if not configured
+        type_config = {}
+        for b_type_cfg in self.config.get('buildings', {}).get('types', []):
+            if 'name' in b_type_cfg:
+                type_config[b_type_cfg['name']] = b_type_cfg.get('include_unnamed', True)
+        
         # Load elevation for height lookup
         with rasterio.open(elevation_file) as src:
             elevation = src.read(1).astype(np.float32)
@@ -102,6 +109,13 @@ class BuildingsProcessor:
                 
                 b_type = self.determine_building_type(props)
                 name = props.get('name')
+                
+                # Check if we should include unnamed buildings of this type
+                # If type is not in config, we assume we should include it (or it won't be matched anyway)
+                include_unnamed = type_config.get(b_type, True)
+                
+                if not name and not include_unnamed:
+                    continue
                 
                 placement = {
                     'x': col,

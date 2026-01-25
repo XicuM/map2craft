@@ -6,6 +6,7 @@ Handles schematic placement and world modifications.
 import logging
 import json
 import yaml
+import numpy as np
 import amulet
 import amulet.nbt as amulet_nbt
 from pathlib import Path
@@ -99,23 +100,42 @@ class LegacySchematicLoader:
     def _load(self):
         try:
             nbt_data = amulet.nbt.read_nbt(str(self.path))
-            # read_nbt returns (NBTFile, format_wrapper)
-            nbt = nbt_data[0]
+            # Handle Amulet NBT return types (NamedTag vs Legacy tuple)
+            if hasattr(nbt_data, "tag"):
+                nbt = nbt_data.tag
+            else:
+                nbt = nbt_data[0]
             
             # Extract dimensions
             # NBTFile might act as CompoundTag or have .value
             if hasattr(nbt, 'value'):
                 nbt = nbt.value
 
-            self.width = int(nbt["Width"].value)
-            self.height = int(nbt["Height"].value)
-            self.length = int(nbt["Length"].value)
+            # Modern Amulet NBT: Tags don't have .value, they ARE the value
+            # Direct int() conversion works on ShortTag, IntTag, etc.
+            self.width = int(nbt["Width"])
+            self.height = int(nbt["Height"])
+            self.length = int(nbt["Length"])
             
             # Extract block data (byte arrays)
-            self.blocks = nbt["Blocks"].value
-            self.data = nbt["Data"].value
+            # ByteArrayTag also doesn't have .value in modern Amulet
+            blocks_tag = nbt["Blocks"]
+            data_tag = nbt["Data"]
+            
+            # Convert to numpy arrays if needed
+            if hasattr(blocks_tag, 'value'):
+                self.blocks = blocks_tag.value
+            else:
+                # Modern: ByteArrayTag is array-like
+                self.blocks = np.array(blocks_tag, dtype=np.uint8)
+                
+            if hasattr(data_tag, 'value'):
+                self.data = data_tag.value
+            else:
+                self.data = np.array(data_tag, dtype=np.uint8)
             
             log.info(f"Loaded legacy schematic: {self.width}x{self.height}x{self.length}")
+            log.debug(f"NBT Keys: {nbt.keys()}")
             
         except Exception as e:
             log.error(f"Failed to parse schematic NBT: {e}")
@@ -151,7 +171,7 @@ class LegacySchematicLoader:
                     # types > 255 not supported in standard .schematic
                     
                     # Translation
-                    block_key = LEGACY_BLOCK_MAP.get(block_id, "minecraft:stone") # Default to stone if unknown? Or pink wool?
+                    block_key = LEGACY_BLOCK_MAP.get(block_id, "minecraft:stone") # Default to stone if unknown
                     if block_id not in LEGACY_BLOCK_MAP:
                         # Log once per ID?
                         pass
@@ -161,16 +181,56 @@ class LegacySchematicLoader:
                     # Handling rotation/data is complex. For now, paste raw base blocks.
                     
                     # Create Block
-                    # Namespace, BaseName, Properties
+                    # Usage: Block(platform, version, namespace, base_name, properties)
+                    try:
+                        from amulet.core.version import VersionNumber
+                        from amulet.nbt import StringTag, IntTag
+                    except ImportError:
+                        log.error("Could not import VersionNumber")
+                        continue
+
+                    # Use Java 1.20.2 data version (3578) as a target for modern blocks
+                    # Ideally this should match the target map version
+                    target_version = VersionNumber(3578) 
+                    
                     ns, name = block_key.split(":")
-                    block = Block(ns, name, props)
+                    
+                    try:
+                        # Construct a valid modern Java block
+                        block = Block("java", target_version, ns, name, props)
+                    except Exception as e:
+                        log.error(f"Cannot create block for {block_key}: {e}")
+                        continue
                     
                     # Set Block
                     try:
+                        # Introspection to find the right API
+                        if count == 0:
+                            log.info(f"Level type: {type(level)}")
+                            log.info(f"Level dir: {dir(level)}")
+                            try:
+                                # Try to get dimension
+                                dim_obj = level.get_dimension(dimension)
+                                log.info(f"Dimension type: {type(dim_obj)}")
+                                log.info(f"Dimension dir: {dir(dim_obj)}")
+                                
+                                # Try to get chunk
+                                cx, cz = (ox+x) >> 4, (oz+z) >> 4
+                                handle = dim_obj.get_chunk_handle(cx, cz)
+                                log.info(f"ChunkHandle type: {type(handle)}")
+                                log.info(f"ChunkHandle dir: {dir(handle)}")
+                                
+                                chunk = handle.get_chunk()
+                                log.info(f"Chunk type: {type(chunk)}")
+                                log.info(f"Chunk dir: {dir(chunk)}")
+                            except Exception as intro_e:
+                                log.error(f"Introspection failed: {intro_e}")
+
                         level.set_block(ox + x, oy + y, oz + z, dimension, block)
                         count += 1
                     except Exception as e:
-                        # log.warning(f"Failed set_block: {e}")
+                        if count == 0:  # Log first failure in detail
+                            log.error(f"First set_block failure at ({ox+x}, {oy+y}, {oz+z}): {e}")
                         pass
                         
         log.info(f"Pasted {count} blocks from schematic.")
@@ -294,13 +354,17 @@ class AmuletEditor:
                     break
 
         if load_level is None:
-             log.error("Amulet load_level is not available. Cannot place buildings.")
+             log.error("CRITICAL: Amulet load_level is not available. Cannot place buildings. Check if 'amulet-level' or 'amulet-core' is installed correctly.")
              return
 
         # Load level
-        try: level = load_level(world_path)
+        try: 
+            log.info(f"Opening world at {world_path} for building placement...")
+            level = load_level(world_path)
         except Exception as e:
             log.error(f"Failed to load world at {world_path}: {e}")
+            import traceback
+            log.error(traceback.format_exc())
             return
         
         placed_count = 0
@@ -340,6 +404,9 @@ class AmuletEditor:
                 schematic = load_level(str(schematic_path))
             except Exception as e:
                 log.warning(f"Standard load_level failed for {schematic_path}: {e}")
+                # Log traceback for debugging
+                # import traceback
+                # log.warning(traceback.format_exc())
                 
                 # Fallback for .schematic files
                 if schematic_path.suffix == '.schematic':
@@ -355,7 +422,9 @@ class AmuletEditor:
                             
                         continue # Skip standard paste
                     except Exception as le:
-                        log.error(f"Legacy load also failed: {le}")
+                        log.error(f"Legacy load also failed for {schematic_path}: {le}")
+                        import traceback
+                        log.error(traceback.format_exc())
                         continue
                 else:
                     continue
@@ -371,6 +440,8 @@ class AmuletEditor:
                     
             except Exception as e:
                 log.error(f"Failed to paste building {b_type} at ({x}, {y}, {z}): {e}")
+                import traceback
+                log.error(traceback.format_exc())
             
             # Close schematic
             if schematic:
@@ -379,7 +450,7 @@ class AmuletEditor:
         # Save and close
         if placed_count > 0:
             log.info(f"Saving world changes...")
-            level.save(create_backup=False)
+            level.save()
         
         level.close()
         log.info(f"Finished. Successfully placed {placed_count} buildings.")

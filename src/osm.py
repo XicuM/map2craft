@@ -216,16 +216,10 @@ class OsmLoader:
         for element in osm_data.get('elements', []):
             tags = element.get('tags', {})
             
-            # Filter by name: at least one name tag must exist and properly describe the object
-            name_found = False
-            for k, v in tags.items():
-                if (k == 'name' or k.startswith('name:') or k == 'alt_name') and v:
-                    if v.strip().lower() not in ['', 'unknown']:
-                        name_found = True
-                        break
-            
-            if not name_found:
-                continue
+            # Filter by name: name check removed to allow unnamed buildings
+            # (Filtering will be handled in buildings.py based on config)
+            name = tags.get('name')
+
             
             # Normalize tags: Prioritize specific types over generic 'building=yes'
             # Landmark objects often have both building=yes and man_made=lighthouse

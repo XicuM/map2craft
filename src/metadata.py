@@ -60,8 +60,8 @@ class MetadataGenerator:
             height_km = (lat_max - lat_min) * lat_km_factor
             min_elev = float(elevation.min())
             max_elev = float(elevation.max())
-            mc_width = width * scale_down
-            mc_height = height * scale_down
+            mc_width = width
+            mc_height = height
             
             with open(output_file, 'w') as f: 
                 json.dump({
@@ -102,6 +102,7 @@ class MetadataGenerator:
                     "minecraft": {
                         "scale": {
                             "factor": scale_down,
+                            "vertical": 1.0 / float(self.config['minecraft']['scale']['vertical']) if float(self.config['minecraft']['scale']['vertical']) != 0 else 1.0,
                             "description": f"1:{scale_down} (1 block = {scale_down} meter(s))"
                         },
                         "dimensions_blocks": {

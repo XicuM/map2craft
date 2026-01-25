@@ -27,11 +27,13 @@ minecraft:
     horizontal: 20
     vertical: 10
     auto_fit: false
+  populate: true
+  populate_exclude_biomes: [6, 247] # Swamp, Mangrove Swamp
 
 # Terrain Classification & Masking
 terrain:
   sea_level_m: 0.0
-  cliff_threshold_degrees: 24.75  # Slope threshold for cliffs/stone shores
+  cliff_threshold_degrees: 30     # Slope threshold for cliffs/stone shores
   lukewarm_ocean_depth_m: -35.0   # Shallow warm water (Mediterranean)
   deep_ocean_depth_m: -90.0       # Deep ocean threshold
   water_mask_threshold_m: 1.0     # Elevation threshold to submerge artifacts
@@ -68,9 +70,9 @@ roads:
   enabled: true
   road_widths:
     motorway: 7
-    trunk: 7
-    primary: 4
-    secondary: 3
+    trunk: 4
+    primary: 3
+    secondary: 2
     # tertiary: 3
     # residential: 3
     # service: 2
@@ -81,17 +83,29 @@ buildings:
   schematics_dir: "assets/schematics"
   types:
     - name: cathedral
-      schematic: "catedral.schematic"
+      schematic: "catedral.schem"
+      y_offset: -1
+      include_unnamed: true
     - name: church
-      schematic: "esglesia.schematic"
+      schematic: "esglesia.schem"
+      y_offset: -1
+      include_unnamed: true
     - name: lighthouse
-      schematic: "far.schematic"
+      schematic: "far.schem"
+      y_offset: -1
+      include_unnamed: true
     - name: windmill
-      schematic: "moli.schematic"
+      schematic: "moli.schem"
+      y_offset: -1
+      include_unnamed: true
     - name: tower
-      schematic: "torre.schematic"
+      schematic: "torre.schem"
+      y_offset: -1
+      include_unnamed: false
     - name: well
-      schematic: "pou.schematic"
+      schematic: "pou.schem"
+      y_offset: -1
+      include_unnamed: true
 
 # Waterways (OpenStreetMap)
 waterways:

@@ -13,11 +13,10 @@ from typing import Dict, Tuple, Optional
 from src.constants import (
     BIOME_COLORS, BIOME_NAMES, LAND_COVER_COLORS, LAND_COVER_NAMES,
     TERRAIN_COLORS, TERRAIN_NAMES_LIST, BUILDING_TYPE_STYLES,
-    SEABED_COLORS
+    SEABED_COLORS, BIOME_IDS
 )
 
 log = logging.getLogger(__name__)
-
 
 
 class MapVisualizer:
@@ -58,6 +57,23 @@ class MapVisualizer:
         plt.savefig(output_file, bbox_inches='tight', dpi=150)
         plt.close()
 
+    def _resize_if_needed(self, data: np.ndarray, max_dim: int = 4096, method=Image.NEAREST) -> Tuple[np.ndarray, float]:
+        """Resizes array if dimensions exceed max_dim. Returns (resized_data, scale_factor)."""
+        h, w = data.shape[:2]
+        if max(h, w) <= max_dim:
+            return data, 1.0
+            
+        scale = max_dim / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        
+        log.info(f"  Downsampling preview from {w}x{h} to {new_w}x{new_h} (scale={scale:.4f})")
+        
+        # Use PIL for resizing
+        img = Image.fromarray(data)
+        resized_img = img.resize((new_w, new_h), method)
+        return np.array(resized_img), scale
+
     def visualize_biomes(self, biome_map_file: str, output_file: str) -> None:
         ''' Create a visualization of the biome map using matplotlib.
         
@@ -66,7 +82,11 @@ class MapVisualizer:
         '''
         log.info("Generating biome visualization...")
         
+        
         with rasterio.open(biome_map_file) as src: biome_data = src.read(1)
+        
+        # Downsample
+        biome_data, _ = self._resize_if_needed(biome_data)
         
         # Colorize biome map
         rgb = self.colorize_array(biome_data, BIOME_COLORS)
@@ -97,6 +117,9 @@ class MapVisualizer:
         
         with rasterio.open(land_cover_file) as src:
             land_cover_data = src.read(1)
+            
+        # Downsample
+        land_cover_data, _ = self._resize_if_needed(land_cover_data)
         
         # Colorize land cover map
         rgb = self.colorize_array(land_cover_data, LAND_COVER_COLORS)
@@ -138,6 +161,9 @@ class MapVisualizer:
         
         with rasterio.open(elevation_file) as src:
             elevation = src.read(1)
+            
+        # Downsample elevation
+        elevation, scale = self._resize_if_needed(elevation, method=Image.BILINEAR if elevation.dtype == np.float32 else Image.NEAREST)
         
         # Normalize elevation for display
         elev_min, elev_max = elevation.min(), elevation.max()
@@ -153,6 +179,11 @@ class MapVisualizer:
         water_pixels = None
         if water_mask_file and Path(water_mask_file).exists():
             water_mask = np.array(Image.open(water_mask_file))
+            
+            # Resize mask to match elevation if needed
+            if water_mask.shape != elevation.shape:
+                 water_mask = np.array(Image.fromarray(water_mask).resize((elevation.shape[1], elevation.shape[0]), Image.NEAREST))
+                 
             if water_mask.shape == elevation.shape:
                 water_pixels = water_mask > 128
                 
@@ -247,22 +278,23 @@ class MapVisualizer:
         if heightmap_file and Path(heightmap_file).exists():
             # Use heightmap as background
             heightmap = np.array(Image.open(heightmap_file), dtype=np.uint16)
+            
+            # Downsample if needed
+            heightmap, scale = self._resize_if_needed(heightmap, method=Image.BILINEAR)
+            
             height, width = heightmap.shape
             
-            # Normalize heightmap to 0-1
-            h_min, h_max = heightmap.min(), heightmap.max()
-            if h_max > h_min:
-                normalized = (heightmap - h_min) / (h_max - h_min)
-            else:
-                normalized = np.zeros_like(heightmap, dtype=np.float32)
-            
-            # Convert to grayscale RGB
-            rgb = np.stack([normalized] * 3, axis=-1)
+            # Create flat grey background for land
+            rgb = np.ones((height, width, 3), dtype=np.float32) * 0.6 # Grey for land
             
             # Apply water mask if available
             if water_mask_file and Path(water_mask_file).exists():
                 try:
                     water_mask = np.array(Image.open(water_mask_file))
+                    # Resize to match heightmap
+                    if water_mask.shape != heightmap.shape:
+                         water_mask = np.array(Image.fromarray(water_mask).resize((width, height), Image.NEAREST))
+                    
                     if water_mask.shape == heightmap.shape:
                         water_pixels = water_mask > 128
                         # Light blue for water
@@ -279,6 +311,10 @@ class MapVisualizer:
                     else:
                         road_mask = np.array(Image.open(road_mask_file))
                     
+                    # Resize
+                    if road_mask.shape != heightmap.shape:
+                         road_mask = np.array(Image.fromarray(road_mask).resize((width, height), Image.NEAREST))
+                    
                     if road_mask.shape == heightmap.shape:
                         road_pixels = road_mask > 0
                         rgb[road_pixels] = [1.0, 0.55, 0.0] # Orange
@@ -286,8 +322,10 @@ class MapVisualizer:
                     log.warning(f"Could not apply road mask: {e}")
         else:
             # Create blank canvas based on first placement
-            height = width = 1000  # Default size
+            # This path is rare in scons pipeline but handled anyway
+            height = width = 1000  
             rgb = np.ones((height, width, 3), dtype=np.float32) * 0.9
+            scale = 1.0 # No scaling applied
         
         # Plot
         fig, ax = plt.subplots(figsize=(16, 12), dpi=150)
@@ -302,9 +340,13 @@ class MapVisualizer:
         typed_coords = {} # type -> (x_list, y_list)
         
         for placement in placements:
-            x = placement.get('x')
-            y = placement.get('y')
-            if x is None or y is None: continue
+            x_raw = placement.get('x')
+            y_raw = placement.get('y')
+            if x_raw is None or y_raw is None: continue
+            
+            # Apply scale
+            x = int(x_raw * scale)
+            y = int(y_raw * scale)
             
             # Check bounds
             if not (0 <= x < width and 0 <= y < height): continue
@@ -312,8 +354,6 @@ class MapVisualizer:
             # Determine type (simplified)
             b_type = placement.get('type', 'building')
             
-
-
             if b_type not in typed_coords: typed_coords[b_type] = ([], [])
             typed_coords[b_type][0].append(x)
             typed_coords[b_type][1].append(y)
@@ -334,7 +374,7 @@ class MapVisualizer:
              legend_handles.append(Patch(color=[1.0, 0.55, 0.0], label='Roads'))
 
         if legend_handles:
-            ax.legend(handles=legend_handles, loc='upper right', fontsize=10, framealpha=0.9, title="Map Artifacts")
+            ax.legend(handles=legend_handles, loc='lower left', fontsize=10, framealpha=0.9, title="Map Artifacts")
             log.info(f"Plotted {len(legend_handles)} legend items")
         else:
             log.warning("No valid building or road coordinates to plot")
@@ -390,6 +430,8 @@ class MapVisualizer:
         # Load inputs
         try:
             heightmap = np.array(Image.open(heightmap_file), dtype=np.uint16)
+            # Downsample
+            heightmap, scale = self._resize_if_needed(heightmap, method=Image.BILINEAR)
         except Exception as e:
             log.error(f"Failed to load heightmap {heightmap_file}: {e}")
             return
@@ -405,6 +447,28 @@ class MapVisualizer:
                 seabed_mask = np.array(Image.open(seabed_cover_file))
             except Exception as e:
                 log.warning(f"Could not load seabed mask: {e}")
+        
+        # Resize all masks to match heightmap if needed
+        # Since heightmap might have been downsampled
+        target_shape = heightmap.shape # (H, W)
+        target_size = (target_shape[1], target_shape[0]) # (W, H) for PIL
+
+        def _resize_to_match(arr):
+            if arr is None: return None
+            if arr.shape[:2] == target_shape: return arr
+            try:
+                # Use NEAREST for masks to preserve class IDs/booleans
+                return np.array(Image.fromarray(arr).resize(target_size, Image.NEAREST))
+            except Exception as e:
+                log.warning(f"Failed to resize mask: {e}")
+                return arr
+
+        water_mask = _resize_to_match(water_mask)
+        river_mask = _resize_to_match(river_mask)
+        road_mask = _resize_to_match(road_mask)
+        biome_map = _resize_to_match(biome_map)
+        steep_slopes_mask = _resize_to_match(steep_slopes_mask)
+        seabed_mask = _resize_to_match(seabed_mask)
         
         # Get sea level and slope thresholds
         sea_level_value = 0
@@ -438,8 +502,8 @@ class MapVisualizer:
             
             # Use biome map to distinguish inland water (Swamp/River biomes)
             if biome_map is not None:
-                # 6 = Swamp, 63 = Mangrove Swamp, 7 = River
-                is_swamp = (biome_map == 6) | (biome_map == 63)
+                # 6 = Swamp, 247 = Mangrove Swamp, 7 = River
+                is_swamp = (biome_map == BIOME_IDS['swamp']) | (biome_map == BIOME_IDS['mangrove_swamp'])
                 is_river_biome = (biome_map == 7)
                 
                 # We color Biome-based "Inland Water" as ID 7 (Dirt/River Bed)
@@ -479,12 +543,20 @@ class MapVisualizer:
             (stone_shore_mask, 3, 0),    # Stone shore from biomes
             (steep_slopes_mask, 3, slope_viz_threshold), # Explicit slope gradient (Stone)
             (badlands_mask, 5, 0),       # Badlands
-            (road_mask, 6, 0),           # Roads (ID 6)
-            (river_mask, 7, 127)         # OSM Waterways -> Dirt (River Bed) (ID 7)
+            (river_mask, 7, 127),        # OSM Waterways -> Dirt (River Bed) (ID 7)
+            (road_mask, 6, 0)            # Roads (High priority, overwrites rivers)
         ]:
             if mask is not None:
                 # Resize if necessary
+                if mask.shape != terrain.shape: 
+                    try:
+                        mask = np.array(Image.fromarray(mask).resize((terrain.shape[1], terrain.shape[0]), Image.NEAREST))
+                    except:
+                        continue
+                
+                # Double check shape
                 if mask.shape != terrain.shape: continue
+                
                 terrain[mask > thresh] = tid
 
         # Log distribution
@@ -506,6 +578,3 @@ class MapVisualizer:
         self._add_legend(handles, 'Terrain Types')
         self._save_plot(output_file)
         log.info(f"[✓] Terrain type visualization saved: {output_file}")
-
-
-

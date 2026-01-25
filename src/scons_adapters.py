@@ -10,7 +10,7 @@ import yaml
 import logging
 
 from src import (
-    geospatial, osm, worldpainter, visualize, amulet_editor, biomes
+    geospatial, osm, worldpainter, visualize, biomes
 )
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class Map2CraftSConsAdapter:
         self.osm = osm.OsmLoader(config)
         self.wp = worldpainter.WorldPainterInterface(config)
         self.viz = visualize.MapVisualizer(config)
-        self.amulet = amulet_editor.AmuletEditor(config)
+        # self.amulet = amulet_editor.AmuletEditor(config)
         self.biome = biomes.BiomeMapper(config)
 
     # ------------------------------------------------------------------
@@ -298,12 +298,33 @@ class Map2CraftSConsAdapter:
     # ------------------------------------------------------------------
     # Amulet Actions
 
-    def amulet_place_action(self, target, source, env):
+    def anvil_place_action(self, target, source, env):
         world_path = Path(str(source[0])).parent
         placements_path = str(source[1])
         height_meta_path = str(source[2])
         
-        self.amulet.place_buildings(world_path, placements_path, height_meta_path)
+        # We need the Config object's path or dictionary
+        # Since AnvilPlacer takes paths, we can pass the config FILE path if available, or just the dict
+        # But my AnvilPlacer implementation expects a config YAML PATH.
+        # Let's verify if scons_adapters keeps the config path.
+        # It typically loads config into a dict.
+        # I'll modify AnvilPlacer to accept a dict, OR write a temporary config.
+        # Actually, AnvilPlacer takes yaml path in __main__, but I can modify the class to take dict.
         
-        with open(str(target[0]), 'w') as f: f.write("Building placement completed.")
+        from src.anvil_place import AnvilPlacer
+        
+        # HACK: Re-dump config to a temp file or assume default?
+        # Better: Instantiate AnvilPlacer with the config dict I already have.
+        # I'll update src/anvil_place.py next to handle dict config.
+        
+        placer = AnvilPlacer(
+            config_path=None, 
+            placements_path=placements_path, 
+            metadata_path=height_meta_path, 
+            world_path=world_path,
+            config_dict=self.config
+        )
+        placer.run()
+        
+        with open(str(target[0]), 'w') as f: f.write("Anvil placement completed.")
         return None

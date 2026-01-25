@@ -140,7 +140,18 @@ class WorldPainterInterface:
         # 1. Get Metadata
         hm_min_m = metadata_dict.get('min_meters', 0.0)
         hm_max_m = metadata_dict.get('max_meters', 255.0)
-        v_scale = metadata_dict.get('scale_factor_vertical', 1.0) # blocks per meter
+        
+        # Check for vertical scale from sidecar FIRST (authoritative for image pixel units)
+        v_scale = metadata_dict.get('scale_factor_vertical')
+        
+        if v_scale is None:
+            # Fallback to standard metadata location
+            if 'minecraft' in metadata_dict and 'scale' in metadata_dict['minecraft']:
+                 v_scale = float(metadata_dict['minecraft']['scale'].get('vertical', 1.0))
+            else:
+                 v_scale = 1.0
+        else:
+            v_scale = float(v_scale)
         
         # 2. Calculate Block Heights (Absolute Y)
         # Y = SeaLevel + (Meters * Scale)
@@ -228,11 +239,8 @@ class WorldPainterInterface:
             lines.append("print('Loading Biomes layer...');")
             lines.append("var biomesLayer = wp.getLayer().withName('Biomes').go();")
             
-            # Dynamic Biome ID lookup for modern biomes (1.19+)
-            lines.append("// Dynamic ID lookup for modern biomes")
-            lines.append("var mangroveBiome = wp.getBiome('minecraft:mangrove_swamp');")
-            lines.append("var mangroveId = (mangroveBiome != null) ? mangroveBiome.getId() : 6; // Fallback to Swamp if missing")
-            lines.append("print('Mangrove Swamp ID resolved to: ' + mangroveId);")
+            # Mangrove Swamp uses biome ID 247 in WorldPainter
+            lines.append("var mangroveId = 247; // Native Mangrove Swamp ID")
             
             biome_terrain_map = BIOME_TO_TERRAIN_MAP
             
@@ -244,7 +252,7 @@ class WorldPainterInterface:
                 
                 # Determine target WP Biome ID
                 target_id_script = str(bid_int)
-                if bid_int == 63: # Internal ID for Mangrove Swamp
+                if bid_int == 247:  # Mangrove Swamp
                     target_id_script = "mangroveId"
                 
                 if bid_int != 0:
@@ -257,7 +265,7 @@ class WorldPainterInterface:
                 if bid_int == 25: target_terrain_script = "tStone" # Stone Shore
                 elif bid_int == 16: target_terrain_script = "tSand" # Beach
                 elif bid_int == 6: target_terrain_script = "tDirt" # Swamp
-                elif bid_int == 63: target_terrain_script = "tDirt" # Mangrove Swamp
+                elif bid_int == 247: target_terrain_script = "tDirt" # Mangrove Swamp
                 elif bid_int == 7: target_terrain_script = "tDirt" # River
                 elif bid_int in [0, 24, 45]: target_terrain_script = "tSand" # Ocean biomes (0, 24, 45)
                 elif bid_int in [37, 38, 39]: target_terrain_script = "tMesa" # Badlands
@@ -343,6 +351,20 @@ class WorldPainterInterface:
                     lines.append(f"var {var_mask} = wp.getHeightMap().fromFile('{abs_mask}').go();")
                     # Apply mask: pixels > 127 set layer to 'lvl'
                     lines.append(f"if ({var_layer} && {var_mask}) wp.applyHeightMap({var_mask}).toWorld(world).applyToLayer({var_layer}).fromLevels(128, 255).toLevel({lvl}).go();")
+
+            # Clean Custom Layers from Roads (Prevent flooding)
+            if kwargs.get('road_mask'):
+                 lines.append("// Clean Custom Layers from Roads")
+                 # We reuse the previously defined mask_roads variable if it exists
+                 lines.append("if (typeof mask_roads !== 'undefined' && mask_roads) {")
+                 for name in custom_layers:
+                     safe_name = "".join(c for c in name if c.isalnum())
+                     var_layer = f"cl_{safe_name}"
+                     lines.append(f"    if (typeof {var_layer} !== 'undefined' && {var_layer}) {{")
+                     lines.append(f"        print('Cleaning {name} from Roads...');")
+                     lines.append(f"        wp.applyHeightMap(mask_roads).toWorld(world).applyToLayer({var_layer}).fromLevels(128, 255).toLevel(0).go();")
+                     lines.append("    }")
+                 lines.append("}")
 
         # 5. Global Population (Trees, Ores, etc.)
         if mp.get('populate', False):
